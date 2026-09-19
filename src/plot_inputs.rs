@@ -2,7 +2,7 @@
 //! folder, or an archetype name — into the parsed pieces a plan is drawn
 //! from. Nothing here parses a format itself: every byte goes to rage-formats.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
@@ -36,9 +36,9 @@ pub struct PlotSources {
     /// What the plan is of: the first input's file or folder name.
     pub label: String,
     pub ynvs: Vec<(String, Ynv)>,
-    pub ybns: Vec<(String, Ybn)>,
+    pub ybns: Vec<Mesh<Ybn>>,
     /// A `.ydr` contributes one drawable, a `.ydd` its whole dictionary.
-    pub drawables: Vec<(String, Vec<Drawable>)>,
+    pub drawables: Vec<Mesh<Vec<Drawable>>>,
     pub ytyps: Vec<(String, Ytyp)>,
     pub ymaps: Vec<(String, Vec<YmapEntity>, Vec<MloInstance>)>,
     /// joaat(lowercase stem) -> stem, for every file seen: how archetype
@@ -47,12 +47,22 @@ pub struct PlotSources {
     /// Files that could not contribute geometry, with why; already reported
     /// on stderr, one line per folder and reason rather than per file.
     pub skipped: Vec<Skipped>,
-    /// File names given with `--ybn`/`--ydr`: the caller said these belong to
-    /// the interior, so they are placed even when their name says otherwise.
-    pub explicit_meshes: HashSet<String>,
     /// Anything the reader had to decide for the caller — an interior placed
     /// in several .ymaps, say. `plot` puts these on the page's caption.
     pub notes: Vec<String>,
+}
+
+/// A mesh file that was read: collision or a drawable dictionary.
+pub struct Mesh<T> {
+    /// What to call it on stderr — a file name, or the inner path of an entry
+    /// inside a game archive.
+    pub name: String,
+    /// True when the caller named this very file with `--ybn`/`--ydr`, which
+    /// says it belongs to the interior whatever it is called. Carried per
+    /// entry rather than looked up by name, so a same-named file picked up by
+    /// a folder walk is not mistaken for it.
+    pub explicit: bool,
+    pub data: T,
 }
 
 /// Why a file contributed nothing.
@@ -135,20 +145,14 @@ pub fn resolve(inputs: &[String], explicit: &Explicit, keys: Option<&GtaKeys>, e
     for input in inputs {
         match classify(input) {
             InputKind::Folder(dir) => add_folder(&dir, &mut src)?,
-            InputKind::File(path) => add_file(&path, true, &mut src)?,
+            InputKind::File(path) => add_file(&path, true, false, &mut src)?,
             InputKind::Archetype(name) => add_archetype(&name, keys, exe, &mut src)?,
         }
     }
-    for path in &explicit.ymap { add_file(path, true, &mut src)?; }
-    for path in &explicit.ytyp { add_file(path, true, &mut src)?; }
-    for path in &explicit.ybn {
-        src.explicit_meshes.insert(name_of(path));
-        add_file(path, true, &mut src)?;
-    }
-    for path in &explicit.ydr {
-        src.explicit_meshes.insert(name_of(path));
-        add_file(path, true, &mut src)?;
-    }
+    for path in &explicit.ymap { add_file(path, true, false, &mut src)?; }
+    for path in &explicit.ytyp { add_file(path, true, false, &mut src)?; }
+    for path in &explicit.ybn { add_file(path, true, true, &mut src)?; }
+    for path in &explicit.ydr { add_file(path, true, true, &mut src)?; }
     Ok(src)
 }
 
@@ -165,7 +169,9 @@ fn remember_name(path: &Path, src: &mut PlotSources) {
 
 /// Reads one file and files its contents under the right kind. `strict` is
 /// on for files the caller named: their problems are errors, not notes.
-fn add_file(path: &Path, strict: bool, src: &mut PlotSources) -> Result<()> {
+/// `explicit` is on for the mesh files `--ybn`/`--ydr` named, which the
+/// caller has declared part of the interior.
+fn add_file(path: &Path, strict: bool, explicit: bool, src: &mut PlotSources) -> Result<()> {
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
     if !matches!(ext.as_str(), "ynv" | "ybn" | "ymap" | "ytyp" | "ydr" | "ydd") {
         if strict {
@@ -195,17 +201,20 @@ fn add_file(path: &Path, strict: bool, src: &mut PlotSources) -> Result<()> {
     let parsed = (|| -> Result<()> {
         match ext.as_str() {
             "ynv" => src.ynvs.push((name.clone(), parse_ynv(&data)?)),
-            "ybn" => src.ybns.push((name.clone(), parse_ybn(&data)?)),
+            "ybn" => src.ybns.push(Mesh { name: name.clone(), explicit, data: parse_ybn(&data)? }),
             "ytyp" => src.ytyps.push((name.clone(), parse_ytyp(&data)?)),
             "ymap" => {
                 let entities = parse_ymap_entities(&data)?;
                 let instances = parse_ymap_mlo_instances(&data)?;
                 src.ymaps.push((name.clone(), entities, instances));
             }
-            "ydr" => src.drawables.push((name.clone(), vec![parse_ydr(&data)?])),
+            "ydr" => {
+                src.drawables.push(Mesh { name: name.clone(), explicit, data: vec![parse_ydr(&data)?] })
+            }
             "ydd" => {
                 let entries = parse_ydd(&data)?;
-                src.drawables.push((name.clone(), entries.into_iter().map(|e| e.drawable).collect()));
+                let data = entries.into_iter().map(|e| e.drawable).collect();
+                src.drawables.push(Mesh { name: name.clone(), explicit, data });
             }
             _ => unreachable!("extension already filtered"),
         }
@@ -241,7 +250,7 @@ fn add_folder(dir: &Path, src: &mut PlotSources) -> Result<()> {
         if skip_drawables && is_drawable(path) {
             continue;
         }
-        add_file(path, false, src)?;
+        add_file(path, false, false, src)?;
     }
     report_skips(&src.skipped[before..]);
     Ok(())
@@ -335,7 +344,7 @@ fn add_archetype(name_or_hash: &str, keys: Option<&GtaKeys>, exe: Option<&Path>,
     // when nothing does, the plan simply has no collision layer.
     if let Some(loc) = index.ybn_by_name.get(&hash) {
         match index.load_bytes(loc, keys).and_then(|data| parse_ybn(&data).map_err(Into::into)) {
-            Ok(ybn) => src.ybns.push((loc.inner_path.clone(), ybn)),
+            Ok(ybn) => src.ybns.push(Mesh { name: loc.inner_path.clone(), explicit: false, data: ybn }),
             Err(err) => {
                 eprintln!("skipping {}: {err:#}", loc.inner_path);
                 src.skipped.push(Skipped::unreadable());

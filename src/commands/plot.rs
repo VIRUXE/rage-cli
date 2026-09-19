@@ -12,7 +12,7 @@ use rage_render::{
     PlanReport, PortalShape, RoomShape, Scene, Tri, FLOOR_BAND,
 };
 
-use crate::plot_inputs::{self, Explicit, PlotSources, SkipReason};
+use crate::plot_inputs::{self, Explicit, Mesh, PlotSources, SkipReason};
 use crate::rpf::GtaKeys;
 use crate::utils::{parse_marker, parse_pair, parse_quad};
 
@@ -160,17 +160,8 @@ pub fn run(args: &PlotArgs, keys: Option<&GtaKeys>, exe: Option<&Path>) -> Resul
 
     if z_band.is_none() {
         let stacked = rooms_stacked(&scene.rooms);
-        if let Some(&(a, b)) = stacked.first() {
-            let (upper, lower) = if scene.rooms[a].z_lo >= scene.rooms[b].z_lo { (a, b) } else { (b, a) };
-            let (u, l) = (&scene.rooms[upper], &scene.rooms[lower]);
-            let more = match stacked.len() {
-                1 => String::new(),
-                n => format!(" and {} more", n - 1),
-            };
-            eprintln!(
-                "warning: rooms stack vertically (r{} '{}' {:.1}..{:.1} over r{} '{}' {:.1}..{:.1}{more}); use --floor-z Z or --z-range LO,HI to draw one storey",
-                u.index, u.name, u.z_lo, u.z_hi, l.index, l.name, l.z_lo, l.z_hi
-            );
+        if let Some(warning) = stacked_rooms_warning(&scene.rooms, &stacked) {
+            eprintln!("{warning}");
         }
     }
 
@@ -295,24 +286,46 @@ fn find_placement(sources: &PlotSources) -> Placement {
 /// is already where it belongs. Reports every world-space file it decides on,
 /// but only when a placement is in play: with nothing to transform, the
 /// distinction makes no difference to the page.
-fn is_interior_mesh(file_name: &str, sources: &PlotSources, placement: &Placement, what: &str) -> bool {
-    if sources.explicit_meshes.contains(file_name) {
+fn is_interior_mesh<T>(mesh: &Mesh<T>, placement: &Placement, what: &str) -> bool {
+    if mesh.explicit {
         return true;
     }
-    let interior = placement.mlo.as_ref().is_some_and(|mlo| mesh_belongs_to(file_name, mlo.name_hash));
+    let interior = placement.mlo.as_ref().is_some_and(|mlo| mesh_belongs_to(&mesh.name, mlo.name_hash));
     if !interior && placement.entity.is_some() {
-        eprintln!("{file_name}: not the interior's own {what}; drawn in world space");
+        eprintln!("{}: not the interior's own {what}; drawn in world space", mesh.name);
     }
     interior
 }
 
-/// True when `file_name` names the archetype `mlo_name_hash`. A resource may
-/// ship the same mesh at several detail levels (`hi@name.ybn`), so the LOD
-/// prefix is stripped before the name is hashed.
+/// True when `file_name` names the archetype `mlo_name_hash`. The name may
+/// arrive as a path — a file inside the game's archives is known by its inner
+/// path — so only the last component counts; and a resource may ship the same
+/// mesh at several detail levels (`hi@name.ybn`), so the LOD prefix comes off
+/// before the name is hashed.
 fn mesh_belongs_to(file_name: &str, mlo_name_hash: u32) -> bool {
-    let stem = file_name.rsplit_once('.').map_or(file_name, |(s, _)| s).to_lowercase();
+    let base = file_name.rsplit(['/', '\\']).next().unwrap_or(file_name);
+    let stem = base.rsplit_once('.').map_or(base, |(s, _)| s).to_lowercase();
     let stem = ["hi@", "ma@", "lo@"].iter().find_map(|p| stem.strip_prefix(p)).unwrap_or(stem.as_str());
     rage_joaat(stem) == mlo_name_hash
+}
+
+/// The one-line note about rooms sitting on top of each other, or `None` when
+/// none do. `rooms_stacked` reports `RoomShape::index` values, which are the
+/// MLO's own room numbers — not positions in `rooms`, since a room whose
+/// footprint could not be estimated is left out.
+fn stacked_rooms_warning(rooms: &[RoomShape], stacked: &[(usize, usize)]) -> Option<String> {
+    let &(a, b) = stacked.first()?;
+    let find = |index: usize| rooms.iter().find(|r| r.index == index);
+    let (a, b) = (find(a)?, find(b)?);
+    let (u, l) = if a.z_lo >= b.z_lo { (a, b) } else { (b, a) };
+    let more = match stacked.len() {
+        1 => String::new(),
+        n => format!(" and {} more", n - 1),
+    };
+    Some(format!(
+        "warning: rooms stack vertically (r{} '{}' {:.1}..{:.1} over r{} '{}' {:.1}..{:.1}{more}); use --floor-z Z or --z-range LO,HI to draw one storey",
+        u.index, u.name, u.z_lo, u.z_hi, l.index, l.name, l.z_lo, l.z_hi
+    ))
 }
 
 /// True when every room but limbo stores its box as half-extents about the
@@ -441,21 +454,21 @@ fn build_scene(
     }
 
     let mut placed_meshes = 0usize;
-    for (name, ybn) in &sources.ybns {
-        let placed = is_interior_mesh(name, sources, placement, "collision");
+    for ybn in &sources.ybns {
+        let placed = is_interior_mesh(ybn, placement, "collision");
         placed_meshes += usize::from(placed);
-        for tri in ybn.triangles() {
+        for tri in ybn.data.triangles() {
             scene.collision.push(Tri { v: tri.vertices.map(|v| if placed { placement.to_world(v) } else { v }) });
         }
     }
 
     // A drawable that belongs to the interior is its shell, stored in the
     // same local space as the rooms; props are not placed per entity yet.
-    for (name, drawables) in &sources.drawables {
-        let placed = is_interior_mesh(name, sources, placement, "shell");
+    for entry in &sources.drawables {
+        let placed = is_interior_mesh(entry, placement, "shell");
         placed_meshes += usize::from(placed);
         let put = |v: Vec3| if placed { placement.to_world(v) } else { v };
-        for drawable in drawables {
+        for drawable in &entry.data {
             let Some(lod) = drawable.best_lod() else { continue };
             for model in &lod.models {
                 for geometry in &model.geometries {
@@ -543,6 +556,7 @@ fn build_scene(
 mod tests {
     use super::*;
     use rage_formats::{MloPortal, MloRoom};
+    use rage_formats::Vec2;
 
     fn room(name: &str, bb_min: Vec3, bb_max: Vec3, attached: &[u32]) -> MloRoom {
         MloRoom {
@@ -591,6 +605,34 @@ mod tests {
         assert!(mesh_belongs_to("MA@Denis3d_CatCafe.ydr", hash), "the name is hashed lowercase");
         assert!(!mesh_belongs_to("kt1_15_0.ybn", hash), "a vanilla map chunk is world-space");
         assert!(!mesh_belongs_to("hei_kt1_rd_4.ybn", hash));
+
+        // A file inside the game's archives is known by its inner path.
+        let bahama = rage_joaat("v_bahama");
+        assert!(mesh_belongs_to("levels/gta5/_citye/beverly_01/bh1_08.rpf/v_bahama.ybn", bahama));
+        assert!(mesh_belongs_to("levels\\gta5\\props.rpf\\hi@v_bahama.ydr", bahama));
+        assert!(!mesh_belongs_to("levels/gta5/_citye/bh1_08.rpf/bh1_08_details.ybn", bahama));
+    }
+
+    #[test]
+    fn the_stacked_rooms_warning_names_rooms_by_their_mlo_index() {
+        let shape = |index: usize, name: &str, z_lo: f32, z_hi: f32| RoomShape {
+            index,
+            name: name.to_string(),
+            footprint: [Vec2::new(0.0, 0.0), Vec2::new(4.0, 0.0), Vec2::new(4.0, 4.0), Vec2::new(0.0, 4.0)],
+            z_lo,
+            z_hi,
+        };
+        // Room 2 was dropped for want of points to estimate it from, so the
+        // indices `rooms_stacked` reports are past the end of the list.
+        let rooms = [shape(0, "limbo", 0.0, 9.0), shape(1, "basement", 17.0, 20.5), shape(3, "kitchen", 21.0, 24.0)];
+
+        let warning = stacked_rooms_warning(&rooms, &[(1, 3), (3, 1)]).expect("a pair was given");
+        assert!(warning.contains("r3 'kitchen' 21.0..24.0 over r1 'basement' 17.0..20.5"), "{warning}");
+        assert!(warning.contains("and 1 more"), "{warning}");
+        assert!(warning.contains("--floor-z"), "{warning}");
+
+        assert!(stacked_rooms_warning(&rooms, &[]).is_none());
+        assert!(stacked_rooms_warning(&rooms, &[(1, 2)]).is_none(), "a dropped room cannot be named");
     }
 
     #[test]
