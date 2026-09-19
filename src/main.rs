@@ -8,11 +8,12 @@ mod navmesh;
 mod index;
 mod keys;
 mod paths;
+mod plot_inputs;
 mod resources;
 mod update;
 mod utils;
 
-use commands::{info, list, extract, verify, tree, textures, screenshot, create, search, resource, index_cmd, navmesh as navmesh_cmd};
+use commands::{info, list, extract, verify, tree, textures, screenshot, create, search, resource, index_cmd, navmesh as navmesh_cmd, plot};
 use commands::update as update_cmd;
 use rpf::GtaKeys;
 
@@ -115,6 +116,9 @@ enum Commands {
     /// Inspect, fetch, export and build navmesh cells (.ynv)
     Navmesh(navmesh_cmd::NavmeshArgs),
 
+    /// Draw a top-down plan of an interior: rooms, portals, props, collision, drawables and navmesh to PNG or SVG
+    Plot(plot::PlotArgs),
+
     /// Check for a newer release, or update this binary in place
     Update(update_cmd::UpdateArgs),
 
@@ -196,6 +200,7 @@ fn dispatch(command: Commands, keys: Option<&GtaKeys>, exe: Option<&Path>, verbo
         Commands::Screenshot(args)                           => screenshot::run(&args, keys, exe),
         Commands::Resource(args)                             => resource::run(&args, keys, verbose),
         Commands::Navmesh(args)                              => navmesh_cmd::run(&args, keys, exe),
+        Commands::Plot(args)                                 => plot::run(&args, keys, exe),
         Commands::Update(args)                               => update_cmd::run(&args),
         Commands::Index(args)                                => index_cmd::run(&args, keys, exe),
         Commands::Create { input, output, version, encryption } => {

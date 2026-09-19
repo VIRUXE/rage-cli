@@ -100,3 +100,15 @@ pub fn parse_quad(s: &str) -> anyhow::Result<[f32; 4]> {
         _ => anyhow::bail!("expected four comma-separated numbers, got '{s}'"),
     }
 }
+
+/// `"X,Y,LABEL"` as a map marker; the label may be empty and may contain commas.
+pub fn parse_marker(s: &str) -> anyhow::Result<(f32, f32, String)> {
+    let mut it = s.splitn(3, ',');
+    let (Some(x), Some(y)) = (
+        it.next().and_then(|v| v.trim().parse::<f32>().ok()),
+        it.next().and_then(|v| v.trim().parse::<f32>().ok()),
+    ) else {
+        anyhow::bail!("expected x,y,label; got '{s}'");
+    };
+    Ok((x, y, it.next().unwrap_or("").to_string()))
+}
