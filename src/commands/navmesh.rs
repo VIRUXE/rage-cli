@@ -5,11 +5,11 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use rage_formats::{
-    cell_bounds, cell_file_name, cell_for_position, parse_ybn, parse_ymap_entities, parse_ynv, rage_joaat,
-    serialize_ynv, Triangle, Ynv, YmapEntity,
+    cell_bounds, cell_file_name, cell_for_position, parse_ybn, parse_ymap_entities, parse_ynv, parse_ytyp, rage_joaat,
+    serialize_ynv, Triangle, Vec3, Ynv, YmapEntity,
 };
 
-use crate::navmesh::{build, BuildOptions};
+use crate::navmesh::{build, BuildOptions, Footprint};
 use crate::resources::load_resource_bytes;
 use crate::rpf::{Archive, GtaKeys};
 
@@ -33,6 +33,34 @@ pub enum NavmeshCommand {
     Build(BuildArgs),
     /// Parse a .ynv and write it back out unchanged (checks the writer against the game)
     Rewrite(ExportArgs),
+    /// Draw a top-down PNG of a cell: polygons over the collision floor and walls
+    Plot(PlotArgs),
+}
+
+#[derive(clap::Args)]
+pub struct PlotArgs {
+    /// The .ynv to draw (interior polygons green, sunk red, the rest grey)
+    pub file: PathBuf,
+    /// World XY box to draw: x0,y0,x1,y1 (default: the interior polygons' extent plus 2 m)
+    #[arg(long, value_name = "X0,Y0,X1,Y1")]
+    pub region: Option<String>,
+    /// Collision file(s) to draw underneath (floor light grey, walls at body height blue)
+    #[arg(long, value_name = "FILE")]
+    pub ybn: Vec<PathBuf>,
+    /// Place the collision by this .ymap's MLO instance
+    #[arg(long, value_name = "FILE")]
+    pub ymap: Option<PathBuf>,
+    /// Floor height used to classify collision triangles
+    #[arg(long)]
+    pub floor_z: Option<f32>,
+    /// Markers to draw: "x,y,label"; repeatable
+    #[arg(long, value_name = "X,Y,LABEL")]
+    pub marker: Vec<String>,
+    /// Pixels per metre
+    #[arg(long, default_value = "30")]
+    pub scale: f32,
+    #[arg(short, long, value_name = "FILE")]
+    pub output: PathBuf,
 }
 
 #[derive(clap::Args)]
@@ -93,6 +121,32 @@ pub struct BuildArgs {
     /// Extra blocked XY boxes (x0,y0,x1,y1); repeatable
     #[arg(long, value_name = "X0,Y0,X1,Y1")]
     pub block: Vec<String>,
+    /// .ytyp file(s) declaring the MLO and its props; every prop the MLO
+    /// places whose archetype box is furniture-height gets its footprint
+    /// blocked (collision inside escrowed .ydr files is invisible otherwise)
+    #[arg(long, value_name = "FILE")]
+    pub ytyp: Vec<PathBuf>,
+    /// Directory whose file names (e.g. stream/ydr) name the archetype hashes in the report
+    #[arg(long, value_name = "DIR")]
+    pub names_from: Option<PathBuf>,
+    /// Also look unknown archetypes up in the game's texture index (needs
+    /// --exe and a built `rage index`), so vanilla props placed by the MLO
+    /// get their boxes too
+    #[arg(long)]
+    pub game_props: bool,
+    /// A prop whose top is lower than this above the floor is stepped over, not blocked
+    #[arg(long, default_value = "0.3")]
+    pub step_height: f32,
+    /// A prop with a bigger footprint (m²) is a room shell or decor set, not furniture: skipped
+    #[arg(long, default_value = "12")]
+    pub max_prop_area: f32,
+    /// Prop names (as in --names-from) to block regardless of the rules; repeatable
+    #[arg(long, value_name = "NAME")]
+    pub block_entity: Vec<String>,
+    /// Name fragments never to block, on top of the defaults (lproxy,
+    /// _details, shell, door, window, carpet); repeatable
+    #[arg(long, value_name = "FRAGMENT")]
+    pub ignore_entity: Vec<String>,
     /// Grid step in metres
     #[arg(long, default_value = "0.25")]
     pub grid: f32,
@@ -115,8 +169,9 @@ pub fn run(args: &NavmeshArgs, keys: Option<&GtaKeys>, exe: Option<&Path>) -> Re
         NavmeshCommand::Cell(a) => run_cell(a, keys, exe),
         NavmeshCommand::Export(a) => run_export(a),
         NavmeshCommand::YbnObj(a) => run_ybn_obj(a),
-        NavmeshCommand::Build(a) => run_build(a),
+        NavmeshCommand::Build(a) => run_build(a, exe),
         NavmeshCommand::Rewrite(a) => run_rewrite(a),
+        NavmeshCommand::Plot(a) => run_plot(a),
     }
 }
 
@@ -307,6 +362,211 @@ fn run_rewrite(args: &ExportArgs) -> Result<()> {
     Ok(())
 }
 
+/// Footprints of the props the placed MLO contains, per the height rule and
+/// the --block-entity/--ignore-entity overrides; prints one line per prop.
+fn prop_footprints(
+    args: &BuildArgs, placement: &YmapEntity, opts: &BuildOptions, game_boxes: &std::collections::HashMap<u32, (Vec3, Vec3)>,
+) -> Result<Vec<Footprint>> {
+    let mut archetypes: std::collections::HashMap<u32, (Vec3, Vec3)> = game_boxes.clone();
+    let mut mlos = Vec::new();
+    for path in &args.ytyp {
+        let data = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+        let ytyp = parse_ytyp(&data).with_context(|| format!("parsing {}", path.display()))?;
+        for a in ytyp.archetypes { archetypes.insert(a.name_hash, (a.bb_min, a.bb_max)); }
+        mlos.extend(ytyp.mlos);
+    }
+    let mlo = mlos.iter().find(|m| m.name_hash == placement.archetype_hash)
+        .with_context(|| format!("no CMloArchetypeDef with hash {:#010x} (the .ymap's MLO) in the given .ytyp files", placement.archetype_hash))?;
+
+    let mut names: std::collections::HashMap<u32, String> = Default::default();
+    if let Some(dir) = &args.names_from {
+        for entry in walkdir(dir)? {
+            if let Some(stem) = entry.file_stem().and_then(|s| s.to_str()) {
+                let stem = stem.to_lowercase();
+                names.insert(rage_joaat(&stem), stem);
+            }
+        }
+    }
+    let name_of = |hash: u32| names.get(&hash).cloned().unwrap_or_else(|| format!("{hash:#010x}"));
+    let forced: std::collections::HashSet<String> = args.block_entity.iter().map(|s| s.to_lowercase()).collect();
+    let mut ignored: Vec<String> = ["lproxy", "_details", "shell", "door", "window", "carpet"].iter().map(|s| s.to_string()).collect();
+    ignored.extend(args.ignore_entity.iter().map(|s| s.to_lowercase()));
+
+    // A prop counts as furniture when it stands on the floor (bottom within
+    // the floor tolerance) and rises above step height; big footprints are
+    // room shells and decor sets; name fragments catch doors, light proxies
+    // and the like.
+    let floor_lo = opts.floor_z - opts.floor_below - 0.1;
+    let floor_hi = opts.floor_z + opts.floor_above;
+    let mut out = Vec::new();
+    let mut counts = [0usize; 5]; // blocked, ignored by name, too big, off the floor, unknown
+    eprintln!("{:<42} {:>6} {:>7} {:>13}  decision", "prop", "height", "area", "z (world)");
+    for e in &mlo.entities {
+        let name = name_of(e.archetype_hash);
+        let Some(&(bb_min, bb_max)) = archetypes.get(&e.archetype_hash) else { counts[4] += 1; eprintln!("{name:<42} {:>6} {:>7} {:>13}  unknown archetype (try --game-props)", "?", "?", "?"); continue };
+        let corners = [
+            (bb_min.x, bb_min.y, bb_min.z), (bb_max.x, bb_min.y, bb_min.z), (bb_max.x, bb_max.y, bb_min.z), (bb_min.x, bb_max.y, bb_min.z),
+            (bb_min.x, bb_min.y, bb_max.z), (bb_max.x, bb_min.y, bb_max.z), (bb_max.x, bb_max.y, bb_max.z), (bb_min.x, bb_max.y, bb_max.z),
+        ];
+        let world: Vec<Vec3> = corners.iter().map(|&(x, y, z)| placement.to_world(e.to_world(Vec3::new(x, y, z)))).collect();
+        let z_lo = world.iter().map(|v| v.z).fold(f32::MAX, f32::min);
+        let z_hi = world.iter().map(|v| v.z).fold(f32::MIN, f32::max);
+        let fp = Footprint::from_points(&world.iter().map(|v| (v.x, v.y)).collect::<Vec<_>>(), z_lo, z_hi);
+        let height = bb_max.z - bb_min.z;
+        let (slot, decision) = if forced.contains(&name) { (0, "blocked (--block-entity)") }
+            else if ignored.iter().any(|frag| name.contains(frag.as_str())) { (1, "skipped: name") }
+            else if z_lo > floor_hi || z_lo < floor_lo { (3, "skipped: not standing on the floor") }
+            else if z_hi < opts.floor_z + args.step_height { (3, "skipped: below step height") }
+            else if fp.area() > args.max_prop_area { (2, "skipped: bigger than --max-prop-area") }
+            else if fp.area() < 0.02 { (3, "skipped: tiny") }
+            else { (0, "blocked") };
+        eprintln!("{name:<42} {height:>6.2} {:>7.2} {:>6.2}..{:<6.2}  {decision}", fp.area(), z_lo, z_hi);
+        counts[slot] += 1;
+        if slot == 0 {
+            out.push(fp);
+        }
+    }
+    eprintln!("props: {} blocked, {} skipped by name, {} too big, {} not furniture height, {} without a known archetype",
+        counts[0], counts[1], counts[2], counts[3], counts[4]);
+    Ok(out)
+}
+
+fn walkdir(dir: &Path) -> Result<Vec<PathBuf>> {
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))? {
+        let path = entry?.path();
+        if path.is_dir() { out.extend(walkdir(&path)?); } else { out.push(path); }
+    }
+    Ok(out)
+}
+
+// ─── plot ────────────────────────────────────────────────────────────────────
+
+fn run_plot(args: &PlotArgs) -> Result<()> {
+    use rage_formats::image::{Rgba, RgbaImage};
+
+    let data = std::fs::read(&args.file).with_context(|| format!("reading {}", args.file.display()))?;
+    let ynv = parse_ynv(&data)?;
+    let interior: Vec<&rage_formats::NavPoly> = ynv.polys.iter().filter(|p| p.is_interior()).collect();
+    let region = match &args.region {
+        Some(r) => parse_quad(r).context("--region")?,
+        None => {
+            if interior.is_empty() { bail!("no interior polygons to frame; give --region"); }
+            let mut r = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
+            for p in &interior {
+                let (lo, hi) = p.bounds();
+                r[0] = r[0].min(lo.x); r[1] = r[1].min(lo.y); r[2] = r[2].max(hi.x); r[3] = r[3].max(hi.y);
+            }
+            [r[0] - 2.0, r[1] - 2.0, r[2] + 2.0, r[3] + 2.0]
+        }
+    };
+    let [x0, y0, x1, y1] = region;
+    let scale = args.scale.max(1.0);
+    let w = ((x1 - x0) * scale).ceil().max(1.0) as u32;
+    let h = ((y1 - y0) * scale).ceil().max(1.0) as u32;
+    if w * h > 40_000_000 { bail!("{w}x{h} px is too large; lower --scale or shrink --region"); }
+    let mut img = RgbaImage::from_pixel(w, h, Rgba([255, 255, 255, 255]));
+    // y up in the world, down in the image
+    let to_px = |x: f32, y: f32| ((x - x0) * scale, (y1 - y) * scale);
+
+    let floor_z = args.floor_z.or_else(|| interior.first().map(|p| p.centroid().z));
+    if !args.ybn.is_empty() {
+        let placement = match &args.ymap { Some(p) => Some(mlo_placement(p)?), None => None };
+        let tris = load_triangles(&args.ybn, placement.as_ref())?;
+        let fz = floor_z.context("--floor-z is needed to classify collision when the cell has no interior polygons")?;
+        for t in &tris {
+            let n = t.normal();
+            let zc = (t.vertices[0].z + t.vertices[1].z + t.vertices[2].z) / 3.0;
+            let zlo = t.vertices.iter().map(|v| v.z).fold(f32::MAX, f32::min);
+            let zhi = t.vertices.iter().map(|v| v.z).fold(f32::MIN, f32::max);
+            let pts: Vec<(f32, f32)> = t.vertices.iter().map(|v| to_px(v.x, v.y)).collect();
+            if n.z > 0.7 && (zc - fz).abs() < 0.6 {
+                fill_polygon(&mut img, &pts, Rgba([225, 225, 225, 255]));
+            } else if n.z.abs() < 0.7 && zlo < fz + 0.45 && zhi > fz + 0.15 {
+                stroke_polygon(&mut img, &pts, Rgba([120, 120, 255, 255]));
+            }
+        }
+    }
+    for p in &ynv.polys {
+        let pts: Vec<(f32, f32)> = p.vertices.iter().map(|v| to_px(v.x, v.y)).collect();
+        if pts.iter().all(|&(x, y)| x < 0.0 || y < 0.0 || x > w as f32 || y > h as f32) { continue; }
+        let sunk = p.vertices.iter().all(|v| (v.z - ynv.bb_min.z).abs() < 1e-3);
+        if sunk {
+            stroke_polygon(&mut img, &pts, Rgba([220, 40, 40, 255]));
+        } else if p.is_interior() {
+            fill_polygon(&mut img, &pts, Rgba([120, 210, 120, 140]));
+            stroke_polygon(&mut img, &pts, Rgba([0, 120, 0, 255]));
+        } else {
+            stroke_polygon(&mut img, &pts, Rgba([170, 170, 170, 255]));
+        }
+    }
+    for m in &args.marker {
+        let mut it = m.splitn(3, ',');
+        let (Some(x), Some(y)) = (it.next().and_then(|v| v.trim().parse::<f32>().ok()), it.next().and_then(|v| v.trim().parse::<f32>().ok())) else {
+            bail!("--marker expects x,y,label; got '{m}'");
+        };
+        let label = it.next().unwrap_or("");
+        let (px, py) = to_px(x, y);
+        let r = 4.0;
+        fill_polygon(&mut img, &[(px - r, py - r), (px + r, py - r), (px + r, py + r), (px - r, py + r)], Rgba([0, 0, 0, 255]));
+        rage_render::draw_text(&mut img, (px + 6.0) as i32, (py - 4.0) as i32, label, 1, [0, 0, 0, 255]);
+    }
+    img.save(&args.output).with_context(|| format!("writing {}", args.output.display()))?;
+    println!("Wrote {} ({w}x{h}, {} interior polygons, region {x0},{y0}..{x1},{y1})", args.output.display(), interior.len());
+    Ok(())
+}
+
+/// Scanline fill of a simple polygon with alpha blending.
+fn fill_polygon(img: &mut rage_formats::image::RgbaImage, pts: &[(f32, f32)], colour: rage_formats::image::Rgba<u8>) {
+    if pts.len() < 3 { return; }
+    let (w, h) = (img.width() as i32, img.height() as i32);
+    let y_min = pts.iter().map(|p| p.1).fold(f32::MAX, f32::min).floor().max(0.0) as i32;
+    let y_max = pts.iter().map(|p| p.1).fold(f32::MIN, f32::max).ceil().min(h as f32 - 1.0) as i32;
+    let mut xs: Vec<f32> = Vec::new();
+    for y in y_min..=y_max {
+        let sy = y as f32 + 0.5;
+        xs.clear();
+        for i in 0..pts.len() {
+            let (ax, ay) = pts[i];
+            let (bx, by) = pts[(i + 1) % pts.len()];
+            if (ay <= sy && by > sy) || (by <= sy && ay > sy) {
+                xs.push(ax + (sy - ay) / (by - ay) * (bx - ax));
+            }
+        }
+        xs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        for pair in xs.chunks(2) {
+            if pair.len() < 2 { break; }
+            let xa = pair[0].round().max(0.0) as i32;
+            let xb = pair[1].round().min(w as f32 - 1.0) as i32;
+            for x in xa..=xb {
+                blend(img, x, y, colour);
+            }
+        }
+    }
+}
+
+fn stroke_polygon(img: &mut rage_formats::image::RgbaImage, pts: &[(f32, f32)], colour: rage_formats::image::Rgba<u8>) {
+    for i in 0..pts.len() {
+        let (ax, ay) = pts[i];
+        let (bx, by) = pts[(i + 1) % pts.len()];
+        let steps = ((bx - ax).abs().max((by - ay).abs())).ceil().max(1.0) as i32;
+        for s in 0..=steps {
+            let t = s as f32 / steps as f32;
+            blend(img, (ax + (bx - ax) * t).round() as i32, (ay + (by - ay) * t).round() as i32, colour);
+        }
+    }
+}
+
+fn blend(img: &mut rage_formats::image::RgbaImage, x: i32, y: i32, c: rage_formats::image::Rgba<u8>) {
+    if x < 0 || y < 0 || x >= img.width() as i32 || y >= img.height() as i32 { return; }
+    let p = img.get_pixel_mut(x as u32, y as u32);
+    let a = c.0[3] as u32;
+    for k in 0..3 {
+        p.0[k] = ((c.0[k] as u32 * a + p.0[k] as u32 * (255 - a)) / 255) as u8;
+    }
+    p.0[3] = 255;
+}
+
 // ─── ybn-obj ─────────────────────────────────────────────────────────────────
 
 fn run_ybn_obj(args: &YbnObjArgs) -> Result<()> {
@@ -354,7 +614,7 @@ fn load_triangles(files: &[PathBuf], placement: Option<&YmapEntity>) -> Result<V
 
 // ─── build ───────────────────────────────────────────────────────────────────
 
-fn run_build(args: &BuildArgs) -> Result<()> {
+fn run_build(args: &BuildArgs, exe: Option<&Path>) -> Result<()> {
     let data = std::fs::read(&args.cell).with_context(|| format!("reading {}", args.cell.display()))?;
     let mut cell = parse_ynv(&data)?;
     let before = cell.polys.len();
@@ -375,6 +635,20 @@ fn run_build(args: &BuildArgs) -> Result<()> {
         ..Default::default()
     };
     for b in &args.block { opts.blocks.push(parse_quad(b).context("--block")?); }
+    if !args.ytyp.is_empty() {
+        let placement = placement.as_ref().context("--ytyp needs --ymap to place the MLO's props")?;
+        let game_boxes = if args.game_props {
+            let exe = exe.context("--game-props needs --exe or GTAV_PATH")?;
+            let exe_path = crate::keys::resolve_exe(exe)?;
+            let path = crate::index::GameIndex::cache_path(&exe_path).context("no cache directory (no HOME/USERPROFILE?)")?;
+            let index = crate::index::GameIndex::load_cached(&path)
+                .with_context(|| format!("--game-props needs the texture index at {}; run `rage index build` first", path.display()))?;
+            index.archetype_box
+        } else {
+            Default::default()
+        };
+        opts.footprints = prop_footprints(args, placement, &opts, &game_boxes)?;
+    }
 
     let (x0, y0, x1, y1) = match cell.cell() {
         Some((cx, cy)) => cell_bounds(cx, cy),

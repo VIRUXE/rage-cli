@@ -23,6 +23,9 @@ pub struct BuildOptions {
     /// Extra XY rectangles to treat as blocked (furniture whose collision
     /// isn't in the file).
     pub blocks: Vec<[f32; 4]>,
+    /// Convex XY footprints with a z range, blocked where the range meets
+    /// the body slab (placed props, from their archetype boxes).
+    pub footprints: Vec<Footprint>,
     /// Grid step in metres.
     pub grid: f32,
     /// Longest rectangle side in metres.
@@ -47,6 +50,7 @@ impl Default for BuildOptions {
             clip: [0.0; 4],
             floor_z: 0.0,
             blocks: Vec::new(),
+            footprints: Vec::new(),
             grid: 0.25,
             max_side: 3.0,
             body_low: 0.15,
@@ -57,6 +61,70 @@ impl Default for BuildOptions {
             sink_below: 1.5,
             sink_above: 2.5,
         }
+    }
+}
+
+/// A prop's footprint: convex hull in XY (counter-clockwise) and its world
+/// z extent.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Footprint {
+    pub hull: Vec<(f32, f32)>,
+    pub z_lo: f32,
+    pub z_hi: f32,
+}
+
+impl Footprint {
+    /// Hull of the given points (Andrew's monotone chain); fewer than three
+    /// distinct points give an empty hull.
+    pub fn from_points(points: &[(f32, f32)], z_lo: f32, z_hi: f32) -> Self {
+        let mut pts: Vec<(f32, f32)> = points.to_vec();
+        pts.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        pts.dedup();
+        if pts.len() < 3 {
+            return Self { hull: Vec::new(), z_lo, z_hi };
+        }
+        let cross = |o: (f32, f32), a: (f32, f32), b: (f32, f32)| (a.0 - o.0) * (b.1 - o.1) - (a.1 - o.1) * (b.0 - o.0);
+        let mut lower: Vec<(f32, f32)> = Vec::new();
+        for &p in &pts {
+            while lower.len() >= 2 && cross(lower[lower.len() - 2], lower[lower.len() - 1], p) <= 0.0 { lower.pop(); }
+            lower.push(p);
+        }
+        let mut upper: Vec<(f32, f32)> = Vec::new();
+        for &p in pts.iter().rev() {
+            while upper.len() >= 2 && cross(upper[upper.len() - 2], upper[upper.len() - 1], p) <= 0.0 { upper.pop(); }
+            upper.push(p);
+        }
+        lower.pop();
+        upper.pop();
+        lower.extend(upper);
+        Self { hull: lower, z_lo, z_hi }
+    }
+
+    pub fn contains(&self, x: f32, y: f32) -> bool {
+        let n = self.hull.len();
+        if n < 3 { return false; }
+        for i in 0..n {
+            let a = self.hull[i];
+            let b = self.hull[(i + 1) % n];
+            if (b.0 - a.0) * (y - a.1) - (b.1 - a.1) * (x - a.0) < 0.0 { return false; }
+        }
+        true
+    }
+
+    pub fn area(&self) -> f32 {
+        let n = self.hull.len();
+        if n < 3 { return 0.0; }
+        (0..n).map(|i| { let a = self.hull[i]; let b = self.hull[(i + 1) % n]; a.0 * b.1 - b.0 * a.1 }).sum::<f32>().abs() * 0.5
+    }
+
+    fn bounds(&self) -> (Vec3, Vec3) {
+        let mut min = Vec3::new(f32::MAX, f32::MAX, 0.0);
+        let mut max = Vec3::new(f32::MIN, f32::MIN, 0.0);
+        for &(x, y) in &self.hull {
+            min.x = min.x.min(x); min.y = min.y.min(y);
+            max.x = max.x.max(x); max.y = max.y.max(y);
+        }
+        (min, max)
     }
 }
 
@@ -216,6 +284,20 @@ impl Grid {
             for j in j0..j1 {
                 for i in i0..i1 {
                     blocked[j * self.nx + i] = true;
+                }
+            }
+        }
+        for fp in &opts.footprints {
+            let (min, max) = fp.bounds();
+            let Some((i0, j0, i1, j1)) = self.cells_in(min, max) else { continue };
+            for j in j0..j1 {
+                for i in i0..i1 {
+                    let idx = j * self.nx + i;
+                    if blocked[idx] { continue; }
+                    let Some(f) = floor[idx] else { continue };
+                    if fp.z_lo > f + opts.body_high || fp.z_hi < f + opts.body_low { continue; }
+                    let (cx, cy) = self.centre(i, j);
+                    if fp.contains(cx, cy) { blocked[idx] = true; }
                 }
             }
         }
@@ -557,6 +639,28 @@ mod tests {
         assert!(cell.polys[0].edges.iter().all(|e| e.a.is_none()));
         assert!(cell.polys[1].edges[1].a.is_none(), "neighbour still points at the sunk polygon");
         assert!(cell.polys[1].vertices[0].z == -0.5);
+    }
+
+    #[test]
+    fn footprint_hull_and_containment() {
+        let fp = Footprint::from_points(&[(0.0, 0.0), (2.0, 0.0), (2.0, 1.0), (0.0, 1.0), (1.0, 0.5)], 0.0, 1.0);
+        assert_eq!(fp.hull.len(), 4);
+        assert!((fp.area() - 2.0).abs() < 1e-5);
+        assert!(fp.contains(1.0, 0.5));
+        assert!(!fp.contains(3.0, 0.5));
+    }
+
+    #[test]
+    fn footprints_block_floor_only_at_body_height() {
+        let (tris, mut opts) = room();
+        // A low rug (z 0..0.05) must not block; a bench (z 0..0.5) must.
+        opts.footprints.push(Footprint::from_points(&[(1.0, 1.0), (3.0, 1.0), (3.0, 3.0), (1.0, 3.0)], 0.0, 0.05));
+        opts.footprints.push(Footprint::from_points(&[(7.0, 1.0), (9.0, 1.0), (9.0, 3.0), (7.0, 3.0)], 0.0, 0.5));
+        let mut cell = Ynv::new_cell(1, Vec3::new(-10.0, -10.0, -10.0), Vec3::new(140.0, 140.0, 40.0));
+        build(&mut cell, &tris, &opts).unwrap();
+        let covered = |x: f32, y: f32| cell.polys.iter().any(|p| { let (lo, hi) = p.bounds(); x > lo.x && x < hi.x && y > lo.y && y < hi.y });
+        assert!(covered(2.0, 2.0), "rug must stay walkable");
+        assert!(!covered(8.0, 2.0), "bench must be blocked");
     }
 
     #[test]

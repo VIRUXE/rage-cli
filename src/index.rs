@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
-use rage_formats::{parse_archetype_txds, parse_txd_relationships, parse_ytd, rage_joaat};
+use rage_formats::{parse_txd_relationships, parse_ytd, parse_ytyp, rage_joaat, Vec3};
 use rpf_archive::{parse_dlc_list, parse_dlc_setup_order};
 
 use crate::commands::search::collect_archives;
@@ -44,6 +44,9 @@ pub struct GameIndex {
     /// Archetype/model name hash -> its `textureDictionary` hash, from every
     /// `.ytyp`. Later `.ytyp`s win, same ranked scan order as `ytd_by_name`.
     pub archetype_txd: HashMap<u32, u32>,
+    /// Archetype name hash -> its bounding box (`bbMin`, `bbMax`), from every
+    /// .ytyp; what a placed prop occupies, for anything that reads placements.
+    pub archetype_box: HashMap<u32, (Vec3, Vec3)>,
     /// Texture name hash -> the name hash of the resident dictionary
     /// (`mapdetail`/`vehshare`) that holds it.
     pub resident_textures: HashMap<u32, u32>,
@@ -415,12 +418,13 @@ fn index_archive(archive: &Archive, archive_path: &Path, nested_rpfs: &[String],
             }
         } else if name_lower.ends_with(".ytyp")
             && let Ok(data) = archive.extract(file, keys)
-            && let Ok(archetypes) = parse_archetype_txds(&data)
+            && let Ok(ytyp) = parse_ytyp(&data)
         {
-            for a in archetypes {
+            for a in ytyp.archetypes {
                 if a.texture_dict_hash != 0 {
                     out.archetype_txd.insert(a.name_hash, a.texture_dict_hash);
                 }
+                out.archetype_box.insert(a.name_hash, (a.bb_min, a.bb_max));
             }
         }
     }
@@ -463,7 +467,8 @@ const MAGIC: u32 = 0x5850_4652; // "RPFX" little-endian
 // in `ytd_by_name`, `archetype_txd`, `resident_textures` (last-wins) and
 // `parent_txds` (first-wins). The layout is still unchanged; an old
 // index.bin just reflects the wrong scan order and must be rebuilt.
-const FORMAT_VERSION: u32 = 3;
+// 4: archetype bounding boxes added (`archetype_box`).
+const FORMAT_VERSION: u32 = 4;
 
 fn write_u32(buf: &mut Vec<u8>, v: u32) {
     buf.extend_from_slice(&v.to_le_bytes());
@@ -496,6 +501,14 @@ fn encode(index: &GameIndex) -> Vec<u8> {
         write_u32(&mut buf, *v);
     }
 
+    write_u32(&mut buf, index.archetype_box.len() as u32);
+    for (k, (lo, hi)) in &index.archetype_box {
+        write_u32(&mut buf, *k);
+        for f in [lo.x, lo.y, lo.z, hi.x, hi.y, hi.z] {
+            buf.extend_from_slice(&f.to_le_bytes());
+        }
+    }
+
     write_u32(&mut buf, index.resident_textures.len() as u32);
     for (k, v) in &index.resident_textures {
         write_u32(&mut buf, *k);
@@ -521,6 +534,10 @@ impl<'a> Cursor<'a> {
         let bytes = self.data.get(self.pos..self.pos + 4).context("index: truncated (u32)")?;
         self.pos += 4;
         Ok(u32::from_le_bytes(bytes.try_into().unwrap()))
+    }
+
+    fn f32(&mut self) -> Result<f32> {
+        Ok(f32::from_bits(self.u32()?))
     }
 
     fn string(&mut self) -> Result<String> {
@@ -561,6 +578,14 @@ fn decode(data: &[u8]) -> Result<GameIndex> {
         let k = c.u32()?;
         let v = c.u32()?;
         index.archetype_txd.insert(k, v);
+    }
+
+    let box_count = c.u32()? as usize;
+    for _ in 0..box_count {
+        let k = c.u32()?;
+        let mut f = [0f32; 6];
+        for v in &mut f { *v = c.f32()?; }
+        index.archetype_box.insert(k, (Vec3::new(f[0], f[1], f[2]), Vec3::new(f[3], f[4], f[5])));
     }
 
     let resident_count = c.u32()? as usize;
