@@ -224,7 +224,9 @@ fn add_archetype(name_or_hash: &str, keys: Option<&GtaKeys>, exe: Option<&Path>,
     src.ytyps.push((loc.inner_path.clone(), ytyp));
 
     let placements = index.mlo_instances.get(&hash).map(Vec::as_slice).unwrap_or(&[]);
-    let mut placed = 0usize;
+    // Counted in placements, not files: one .ymap can place the same
+    // interior several times, and the note is about which one is drawn.
+    let mut placements_found = 0usize;
     for loc in placements {
         let data = match index.load_bytes(loc, keys) {
             Ok(data) => data,
@@ -242,8 +244,8 @@ fn add_archetype(name_or_hash: &str, keys: Option<&GtaKeys>, exe: Option<&Path>,
             Ok((mut entities, mut instances)) => {
                 entities.retain(|e| e.archetype_hash == hash);
                 instances.retain(|i| i.entity.archetype_hash == hash);
+                placements_found += instances.len();
                 src.ymaps.push((loc.inner_path.clone(), entities, instances));
-                placed += 1;
             }
             Err(err) => {
                 eprintln!("skipping {}: {err:#}", loc.inner_path);
@@ -251,8 +253,8 @@ fn add_archetype(name_or_hash: &str, keys: Option<&GtaKeys>, exe: Option<&Path>,
             }
         }
     }
-    if placed > 1 {
-        src.notes.push(format!("{placed} placements in the game, drawing the first"));
+    if placements_found > 1 {
+        src.notes.push(format!("{placements_found} placements in the game, drawing the first"));
     }
 
     // The collision of an interior almost always shares its archetype name;

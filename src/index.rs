@@ -506,7 +506,7 @@ fn index_archive(archive: &Archive, archive_path: &Path, nested_rpfs: &[String],
                         let mut seen = std::collections::HashSet::new();
                         for entity in entities.iter().filter(|e| e.is_mlo_instance) {
                             if seen.insert(entity.archetype_hash) {
-                                out.mlo_instances.entry(entity.archetype_hash).or_default().push(loc());
+                                record_mlo_instance(&mut out.mlo_instances, entity.archetype_hash, loc());
                             }
                         }
                     }
@@ -516,6 +516,30 @@ fn index_archive(archive: &Archive, archive_path: &Path, nested_rpfs: &[String],
             }
         }
     }
+}
+
+/// Files one `.ymap`'s placement of an interior, last-wins per map file —
+/// the same DLC-overrides-base rule `ytd_by_name` and `archetype_txd`
+/// follow, which for a *list* means replacing the matching entry in place
+/// rather than appending beside it. A DLC that ships its own copy of a
+/// base-game map would otherwise leave two entries, and `plot` (which draws
+/// the first) would draw the superseded one.
+///
+/// Two locations are the same map when their file names match, ignoring
+/// case: a DLC override keeps the map's name but rarely its full path
+/// (`x64/levels/...` in the pack instead of `levels/gta5/...` in the base).
+/// Distinct maps that place the same interior keep their own entries.
+fn record_mlo_instance(out: &mut HashMap<u32, Vec<EntryLoc>>, archetype: u32, loc: EntryLoc) {
+    let entries = out.entry(archetype).or_default();
+    match entries.iter_mut().find(|e| ymap_file_name(&e.inner_path) == ymap_file_name(&loc.inner_path)) {
+        Some(existing) => *existing = loc,
+        None => entries.push(loc),
+    }
+}
+
+/// The last `/`-separated segment of an entry path, lowercased.
+fn ymap_file_name(inner_path: &str) -> String {
+    inner_path.rsplit(['/', '\\']).next().unwrap_or(inner_path).to_lowercase()
 }
 
 /// Merges `rels` into `out`, first child-wins — matching CodeWalker's
@@ -665,7 +689,10 @@ impl<'a> Cursor<'a> {
 fn read_loc(c: &mut Cursor) -> Result<EntryLoc> {
     let top_archive = PathBuf::from(c.string()?);
     let nested_count = c.u32()? as usize;
-    let mut nested_rpfs = Vec::with_capacity(nested_count);
+    // The count comes from the cache file, which may be truncated or
+    // garbled: reserve a sane amount and let the reads below fail with
+    // "truncated" rather than aborting the process on a huge allocation.
+    let mut nested_rpfs = Vec::with_capacity(nested_count.min(1024));
     for _ in 0..nested_count {
         nested_rpfs.push(c.string()?);
     }
@@ -811,6 +838,42 @@ mod tests {
             assert_eq!(read_loc(&mut c).expect("should read back"), original);
             assert_eq!(c.pos, buf.len(), "read_loc should consume exactly what write_loc wrote");
         }
+    }
+
+    /// A DLC that ships its own copy of a base-game `.ymap` must *replace*
+    /// the base entry, not sit beside it: `plot` draws the first placement,
+    /// so a stale base-game copy left in front of the DLC one would be the
+    /// exact opposite of the last-wins rule every other map follows.
+    #[test]
+    fn a_later_archive_replaces_the_same_ymap_rather_than_adding_it() {
+        let base = EntryLoc {
+            top_archive: PathBuf::from("C:/game/x64a.rpf"),
+            nested_rpfs: vec!["levels/gta5/_citye/indust_01.rpf".to_string()],
+            inner_path: "id1_03_interior.ymap".to_string(),
+        };
+        let dlc = EntryLoc {
+            top_archive: PathBuf::from("C:/game/update/x64/dlcpacks/mpheist/dlc.rpf"),
+            nested_rpfs: vec!["x64/levels/mpheist/interiors.rpf".to_string()],
+            inner_path: "ID1_03_Interior.ymap".to_string(), // same map, different case
+        };
+        let elsewhere = EntryLoc { inner_path: "other.ymap".to_string(), ..base.clone() };
+
+        let mut out: HashMap<u32, Vec<EntryLoc>> = HashMap::new();
+        record_mlo_instance(&mut out, 7, base);
+        record_mlo_instance(&mut out, 7, elsewhere.clone());
+        record_mlo_instance(&mut out, 7, dlc.clone());
+
+        assert_eq!(out[&7], vec![dlc, elsewhere], "the DLC copy should replace the base one in place");
+    }
+
+    #[test]
+    fn different_archetypes_keep_their_own_placement_lists() {
+        let a = loc("a.ymap");
+        let mut out: HashMap<u32, Vec<EntryLoc>> = HashMap::new();
+        record_mlo_instance(&mut out, 1, a.clone());
+        record_mlo_instance(&mut out, 2, a.clone());
+        assert_eq!(out[&1], vec![a.clone()]);
+        assert_eq!(out[&2], vec![a]);
     }
 
     #[test]
