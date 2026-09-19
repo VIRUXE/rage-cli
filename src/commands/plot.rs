@@ -402,5 +402,8 @@ fn build_scene(
     if !sources.skipped.is_empty() {
         scene.caption.push(format!("escrow-encrypted, not drawn: {}", sources.skipped.join(", ")));
     }
+    for note in &sources.notes {
+        scene.caption.push(note.clone());
+    }
     Ok(scene)
 }

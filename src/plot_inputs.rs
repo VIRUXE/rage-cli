@@ -11,6 +11,7 @@ use rage_formats::{
     rage_joaat, Drawable, MloInstance, Ybn, YmapEntity, Ynv, Ytyp,
 };
 
+use crate::index::GameIndex;
 use crate::rpf::GtaKeys;
 use crate::utils::walkdir;
 
@@ -46,6 +47,9 @@ pub struct PlotSources {
     /// Files that could not contribute geometry (escrow-encrypted or
     /// unparseable); each was already reported on stderr.
     pub skipped: Vec<String>,
+    /// Anything the reader had to decide for the caller — an interior placed
+    /// in several .ymaps, say. `plot` puts these on the page's caption.
+    pub notes: Vec<String>,
 }
 
 /// What an input string turned out to be.
@@ -192,8 +196,77 @@ fn add_folder(dir: &Path, src: &mut PlotSources) -> Result<()> {
 }
 
 /// A vanilla interior named on the command line, e.g. `v_bahama` or
-/// `0x8ae4f2c2`. Resolving one needs the game index, which this command does
-/// not read yet.
-fn add_archetype(name_or_hash: &str, _keys: Option<&GtaKeys>, _exe: Option<&Path>, _src: &mut PlotSources) -> Result<()> {
-    bail!("'{name_or_hash}' is not a file or folder; resolving a vanilla interior by name needs the game index (Task 4 adds it)")
+/// `0x8ae4f2c2`: the game index says which `.ytyp` declares it, which
+/// `.ymap`s place it and whether a `.ybn` shares its name, and each of those
+/// is read straight out of the archives it lives in.
+fn add_archetype(name_or_hash: &str, keys: Option<&GtaKeys>, exe: Option<&Path>, src: &mut PlotSources) -> Result<()> {
+    let hash = match name_or_hash.strip_prefix("0x").or_else(|| name_or_hash.strip_prefix("0X")) {
+        Some(digits) => u32::from_str_radix(digits, 16)
+            .with_context(|| format!("'{name_or_hash}' is not a 32-bit hex hash"))?,
+        None => rage_joaat(&name_or_hash.to_lowercase()),
+    };
+
+    let Some(index) = GameIndex::load_or_build(exe, keys) else {
+        bail!(
+            "'{name_or_hash}' is not a file or folder; resolving a vanilla interior by name needs \
+             --exe or GTAV_PATH so the game index can be used"
+        );
+    };
+
+    let Some(loc) = index.mlo_ytyp.get(&hash) else {
+        bail!("no interior archetype named '{name_or_hash}' in the game index");
+    };
+    let data = index.load_bytes(loc, keys).with_context(|| format!("reading {}", loc.inner_path))?;
+    let mut ytyp = parse_ytyp(&data).with_context(|| format!("parsing {}", loc.inner_path))?;
+    // One .ytyp declares many interiors; only the one that was asked for
+    // should be drawn, but every archetype stays for the prop boxes.
+    ytyp.mlos.retain(|mlo| mlo.name_hash == hash);
+    src.ytyps.push((loc.inner_path.clone(), ytyp));
+
+    let placements = index.mlo_instances.get(&hash).map(Vec::as_slice).unwrap_or(&[]);
+    let mut placed = 0usize;
+    for loc in placements {
+        let data = match index.load_bytes(loc, keys) {
+            Ok(data) => data,
+            Err(err) => {
+                eprintln!("skipping {}: {err:#}", loc.inner_path);
+                src.skipped.push(loc.inner_path.clone());
+                continue;
+            }
+        };
+        let parsed = parse_ymap_entities(&data).and_then(|entities| {
+            let instances = parse_ymap_mlo_instances(&data)?;
+            Ok((entities, instances))
+        });
+        match parsed {
+            Ok((mut entities, mut instances)) => {
+                entities.retain(|e| e.archetype_hash == hash);
+                instances.retain(|i| i.entity.archetype_hash == hash);
+                src.ymaps.push((loc.inner_path.clone(), entities, instances));
+                placed += 1;
+            }
+            Err(err) => {
+                eprintln!("skipping {}: {err:#}", loc.inner_path);
+                src.skipped.push(loc.inner_path.clone());
+            }
+        }
+    }
+    if placed > 1 {
+        src.notes.push(format!("{placed} placements in the game, drawing the first"));
+    }
+
+    // The collision of an interior almost always shares its archetype name;
+    // when nothing does, the plan simply has no collision layer.
+    if let Some(loc) = index.ybn_by_name.get(&hash) {
+        match index.load_bytes(loc, keys).and_then(|data| parse_ybn(&data).map_err(Into::into)) {
+            Ok(ybn) => src.ybns.push((loc.inner_path.clone(), ybn)),
+            Err(err) => {
+                eprintln!("skipping {}: {err:#}", loc.inner_path);
+                src.skipped.push(loc.inner_path.clone());
+            }
+        }
+    }
+
+    src.names.insert(hash, name_or_hash.to_lowercase());
+    Ok(())
 }

@@ -137,6 +137,21 @@ fn no_inputs_is_a_usage_error() {
 }
 
 #[test]
+fn archetype_input_without_index_explains_itself() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_rage"))
+        .args(["plot", "v_int_3", "-o", dir.path().join("out.png").to_str().unwrap()])
+        .env("RAGE_NO_UPDATE_CHECK", "1")
+        .env_remove("GTAV_PATH")
+        .output()
+        .expect("failed to run the rage binary");
+    assert!(!out.status.success(), "an archetype name with no game index should fail");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("GTAV_PATH"), "the error should say how to point `rage` at the game: {err}");
+    assert!(err.contains("v_int_3"), "the error should name the input: {err}");
+}
+
+#[test]
 fn navmesh_plot_is_gone() {
     let dir = tempfile::tempdir().unwrap();
     let ynv = write(dir.path(), "cell.ynv", &serialize_ynv(&cell()).unwrap());
