@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
-use rage_formats::{parse_txd_relationships, parse_ytd, parse_ytyp, rage_joaat, Vec3};
+use rage_formats::{parse_txd_relationships, parse_ymap_entities, parse_ytd, parse_ytyp, rage_joaat, Vec3};
 use rpf_archive::{parse_dlc_list, parse_dlc_setup_order};
 
 use crate::commands::search::collect_archives;
@@ -55,6 +55,17 @@ pub struct GameIndex {
     /// relationship for a given child wins, matching CodeWalker's own
     /// first-wins merge (see `merge_txd_relationships`).
     pub parent_txds: HashMap<u32, u32>,
+    /// MLO archetype name hash -> the `.ytyp` that declares it. Later
+    /// archives win (last write), the same rank order as the maps above.
+    pub mlo_ytyp: HashMap<u32, EntryLoc>,
+    /// MLO archetype name hash -> every `.ymap` that places a
+    /// `CMloInstanceDef` of it. An interior is usually placed once, but
+    /// repeated interiors (garages, apartments) are placed many times, so
+    /// this keeps them all in scan order.
+    pub mlo_instances: HashMap<u32, Vec<EntryLoc>>,
+    /// `joaat(lowercase .ybn stem)` -> where that collision file lives. The
+    /// collision of an interior usually shares the archetype's own name.
+    pub ybn_by_name: HashMap<u32, EntryLoc>,
 }
 
 const RESIDENT_DICTS: [&str; 2] = ["mapdetail", "vehshare"];
@@ -208,6 +219,9 @@ impl GameIndex {
             archetypes: self.archetype_txd.len(),
             resident_textures: self.resident_textures.len(),
             parent_txds: self.parent_txds.len(),
+            interiors: self.mlo_ytyp.len(),
+            interior_placements: self.mlo_instances.values().map(|v| v.len()).sum(),
+            collision_files: self.ybn_by_name.len(),
         }
     }
 
@@ -216,9 +230,50 @@ impl GameIndex {
     pub fn summary(&self) -> String {
         let s = self.stats();
         format!(
-            "{} dictionaries, {} archetypes, {} resident textures, {} txd parent links",
-            s.ytds, s.archetypes, s.resident_textures, s.parent_txds
+            "{} dictionaries, {} archetypes, {} resident textures, {} txd parent links, \
+             {} interiors, {} interior placements, {} collision files",
+            s.ytds, s.archetypes, s.resident_textures, s.parent_txds,
+            s.interiors, s.interior_placements, s.collision_files
         )
+    }
+
+    /// Loads the cached game-wide index, building and caching it if there's
+    /// none yet. `None` (with a warning, not an error — callers each have
+    /// their own fallback) when there's no `--exe`/`GTAV_PATH` to find the
+    /// game directory from, or the build itself fails.
+    pub fn load_or_build(exe: Option<&Path>, keys: Option<&GtaKeys>) -> Option<Self> {
+        let exe = exe?;
+        let exe_path = match crate::keys::resolve_exe(exe) {
+            Ok(p) => p,
+            Err(err) => { eprintln!("warning: couldn't resolve --exe for the game index: {err}"); return None; }
+        };
+        let game_root = exe_path.parent()?.to_path_buf();
+
+        let cache_path = GameIndex::cache_path(&exe_path);
+
+        if let Some(path) = &cache_path
+            && path.is_file()
+        {
+            match GameIndex::load_cached(path) {
+                Ok(index) => return Some(index),
+                Err(err) => eprintln!("game index cache at {} is invalid ({err}); rebuilding", path.display()),
+            }
+        }
+
+        println!("Building game index for {} (one-off; cached for next time)...", game_root.display());
+        let index = match GameIndex::build(&game_root, keys) {
+            Ok(index) => index,
+            Err(err) => { eprintln!("warning: failed to build game index: {err}"); return None; }
+        };
+        println!("Game index: {}", index.summary());
+
+        if let Some(path) = &cache_path
+            && let Err(err) = index.save_cached(path)
+        {
+            eprintln!("warning: failed to cache game index: {err}");
+        }
+
+        Some(index)
     }
 }
 
@@ -230,6 +285,9 @@ pub struct IndexStats {
     pub archetypes: usize,
     pub resident_textures: usize,
     pub parent_txds: usize,
+    pub interiors: usize,
+    pub interior_placements: usize,
+    pub collision_files: usize,
 }
 
 /// Every .rpf under `game_root` in the game's load order: base archives,
@@ -391,13 +449,14 @@ fn index_archive(archive: &Archive, archive_path: &Path, nested_rpfs: &[String],
         }
 
         let stem = crate::resources::file_stem(&name_lower);
+        let loc = || EntryLoc {
+            top_archive: archive_path.to_path_buf(),
+            nested_rpfs: nested_rpfs.to_vec(),
+            inner_path: file.path.clone(),
+        };
 
         if name_lower.ends_with(".ytd") {
-            out.ytd_by_name.insert(rage_joaat(&stem), EntryLoc {
-                top_archive: archive_path.to_path_buf(),
-                nested_rpfs: nested_rpfs.to_vec(),
-                inner_path: file.path.clone(),
-            });
+            out.ytd_by_name.insert(rage_joaat(&stem), loc());
 
             if RESIDENT_DICTS.contains(&stem.as_str())
                 && let Ok(data) = archive.extract(file, keys)
@@ -425,6 +484,35 @@ fn index_archive(archive: &Archive, archive_path: &Path, nested_rpfs: &[String],
                     out.archetype_txd.insert(a.name_hash, a.texture_dict_hash);
                 }
                 out.archetype_box.insert(a.name_hash, (a.bb_min, a.bb_max));
+                if a.is_mlo {
+                    out.mlo_ytyp.insert(a.name_hash, loc());
+                }
+            }
+        } else if name_lower.ends_with(".ybn") {
+            // Name only: a `.ybn` is never parsed while indexing, so this
+            // branch costs nothing beyond the directory listing already read.
+            out.ybn_by_name.insert(rage_joaat(&stem), loc());
+        } else if name_lower.ends_with(".ymap") {
+            // The one branch that reads a file it would otherwise skip. Only
+            // the entity list is decoded (`parse_ymap_entities`), and only
+            // the `CMloInstanceDef`s in it are kept — enough to answer "which
+            // .ymap places this interior" without holding any of the map.
+            match archive.extract(file, keys) {
+                Ok(data) => match parse_ymap_entities(&data) {
+                    Ok(entities) => {
+                        // One entry per (archetype, .ymap): a map that places
+                        // the same interior twice is still read once, and
+                        // `plot` re-reads every instance out of it anyway.
+                        let mut seen = std::collections::HashSet::new();
+                        for entity in entities.iter().filter(|e| e.is_mlo_instance) {
+                            if seen.insert(entity.archetype_hash) {
+                                out.mlo_instances.entry(entity.archetype_hash).or_default().push(loc());
+                            }
+                        }
+                    }
+                    Err(err) => log::debug!("index: failed to parse '{}': {err}", file.path),
+                },
+                Err(err) => log::debug!("index: failed to extract '{}': {err}", file.path),
             }
         }
     }
@@ -468,7 +556,8 @@ const MAGIC: u32 = 0x5850_4652; // "RPFX" little-endian
 // `parent_txds` (first-wins). The layout is still unchanged; an old
 // index.bin just reflects the wrong scan order and must be rebuilt.
 // 4: archetype bounding boxes added (`archetype_box`).
-const FORMAT_VERSION: u32 = 4;
+// 5: MLO ytyp/ymap locations and ybn names for `rage plot`.
+const FORMAT_VERSION: u32 = 5;
 
 fn write_u32(buf: &mut Vec<u8>, v: u32) {
     buf.extend_from_slice(&v.to_le_bytes());
@@ -479,6 +568,15 @@ fn write_str(buf: &mut Vec<u8>, s: &str) {
     buf.extend_from_slice(s.as_bytes());
 }
 
+fn write_loc(buf: &mut Vec<u8>, loc: &EntryLoc) {
+    write_str(buf, &loc.top_archive.to_string_lossy());
+    write_u32(buf, loc.nested_rpfs.len() as u32);
+    for n in &loc.nested_rpfs {
+        write_str(buf, n);
+    }
+    write_str(buf, &loc.inner_path);
+}
+
 fn encode(index: &GameIndex) -> Vec<u8> {
     let mut buf = Vec::new();
     write_u32(&mut buf, MAGIC);
@@ -487,12 +585,7 @@ fn encode(index: &GameIndex) -> Vec<u8> {
     write_u32(&mut buf, index.ytd_by_name.len() as u32);
     for (hash, loc) in &index.ytd_by_name {
         write_u32(&mut buf, *hash);
-        write_str(&mut buf, &loc.top_archive.to_string_lossy());
-        write_u32(&mut buf, loc.nested_rpfs.len() as u32);
-        for n in &loc.nested_rpfs {
-            write_str(&mut buf, n);
-        }
-        write_str(&mut buf, &loc.inner_path);
+        write_loc(&mut buf, loc);
     }
 
     write_u32(&mut buf, index.archetype_txd.len() as u32);
@@ -519,6 +612,27 @@ fn encode(index: &GameIndex) -> Vec<u8> {
     for (k, v) in &index.parent_txds {
         write_u32(&mut buf, *k);
         write_u32(&mut buf, *v);
+    }
+
+    write_u32(&mut buf, index.mlo_ytyp.len() as u32);
+    for (hash, loc) in &index.mlo_ytyp {
+        write_u32(&mut buf, *hash);
+        write_loc(&mut buf, loc);
+    }
+
+    write_u32(&mut buf, index.mlo_instances.len() as u32);
+    for (hash, locs) in &index.mlo_instances {
+        write_u32(&mut buf, *hash);
+        write_u32(&mut buf, locs.len() as u32);
+        for loc in locs {
+            write_loc(&mut buf, loc);
+        }
+    }
+
+    write_u32(&mut buf, index.ybn_by_name.len() as u32);
+    for (hash, loc) in &index.ybn_by_name {
+        write_u32(&mut buf, *hash);
+        write_loc(&mut buf, loc);
     }
 
     buf
@@ -548,6 +662,17 @@ impl<'a> Cursor<'a> {
     }
 }
 
+fn read_loc(c: &mut Cursor) -> Result<EntryLoc> {
+    let top_archive = PathBuf::from(c.string()?);
+    let nested_count = c.u32()? as usize;
+    let mut nested_rpfs = Vec::with_capacity(nested_count);
+    for _ in 0..nested_count {
+        nested_rpfs.push(c.string()?);
+    }
+    let inner_path = c.string()?;
+    Ok(EntryLoc { top_archive, nested_rpfs, inner_path })
+}
+
 fn decode(data: &[u8]) -> Result<GameIndex> {
     let mut c = Cursor { data, pos: 0 };
     if c.u32()? != MAGIC {
@@ -563,14 +688,8 @@ fn decode(data: &[u8]) -> Result<GameIndex> {
     let ytd_count = c.u32()? as usize;
     for _ in 0..ytd_count {
         let hash = c.u32()?;
-        let top_archive = PathBuf::from(c.string()?);
-        let nested_count = c.u32()? as usize;
-        let mut nested_rpfs = Vec::with_capacity(nested_count);
-        for _ in 0..nested_count {
-            nested_rpfs.push(c.string()?);
-        }
-        let inner_path = c.string()?;
-        index.ytd_by_name.insert(hash, EntryLoc { top_archive, nested_rpfs, inner_path });
+        let loc = read_loc(&mut c)?;
+        index.ytd_by_name.insert(hash, loc);
     }
 
     let archetype_count = c.u32()? as usize;
@@ -602,6 +721,31 @@ fn decode(data: &[u8]) -> Result<GameIndex> {
         index.parent_txds.insert(k, v);
     }
 
+    let mlo_ytyp_count = c.u32()? as usize;
+    for _ in 0..mlo_ytyp_count {
+        let hash = c.u32()?;
+        let loc = read_loc(&mut c)?;
+        index.mlo_ytyp.insert(hash, loc);
+    }
+
+    let mlo_instance_count = c.u32()? as usize;
+    for _ in 0..mlo_instance_count {
+        let hash = c.u32()?;
+        let locs_count = c.u32()? as usize;
+        let mut locs = Vec::with_capacity(locs_count.min(1024));
+        for _ in 0..locs_count {
+            locs.push(read_loc(&mut c)?);
+        }
+        index.mlo_instances.insert(hash, locs);
+    }
+
+    let ybn_count = c.u32()? as usize;
+    for _ in 0..ybn_count {
+        let hash = c.u32()?;
+        let loc = read_loc(&mut c)?;
+        index.ybn_by_name.insert(hash, loc);
+    }
+
     Ok(index)
 }
 
@@ -620,6 +764,10 @@ mod tests {
         index.archetype_txd.insert(2, 3);
         index.resident_textures.insert(4, 5);
         index.parent_txds.insert(6, 7);
+        index.archetype_box.insert(8, (Vec3::new(-1.0, -2.0, -3.0), Vec3::new(1.0, 2.0, 3.0)));
+        index.mlo_ytyp.insert(10, loc("v_int_3.ytyp"));
+        index.mlo_instances.insert(10, vec![loc("a.ymap"), loc("b.ymap")]);
+        index.ybn_by_name.insert(10, loc("v_int_3.ybn"));
 
         let bytes = encode(&index);
         let decoded = decode(&bytes).expect("should decode");
@@ -628,6 +776,54 @@ mod tests {
         assert_eq!(decoded.archetype_txd, index.archetype_txd);
         assert_eq!(decoded.resident_textures, index.resident_textures);
         assert_eq!(decoded.parent_txds, index.parent_txds);
+        assert_eq!(decoded.archetype_box, index.archetype_box);
+        assert_eq!(decoded.mlo_ytyp, index.mlo_ytyp);
+        assert_eq!(decoded.mlo_instances, index.mlo_instances);
+        assert_eq!(decoded.ybn_by_name, index.ybn_by_name);
+    }
+
+    fn loc(inner: &str) -> EntryLoc {
+        EntryLoc {
+            top_archive: PathBuf::from("C:/game/x64a.rpf"),
+            nested_rpfs: vec!["levels/gta5/interiors.rpf".to_string()],
+            inner_path: inner.to_string(),
+        }
+    }
+
+    #[test]
+    fn write_loc_and_read_loc_are_symmetric() {
+        for original in [
+            loc("v_int_3.ytyp"),
+            EntryLoc {
+                top_archive: PathBuf::from(r"C:\game\update\update.rpf"),
+                nested_rpfs: Vec::new(),
+                inner_path: "x.ybn".to_string(),
+            },
+            EntryLoc {
+                top_archive: PathBuf::from("C:/game/x64a.rpf"),
+                nested_rpfs: vec!["a.rpf".to_string(), "b.rpf".to_string()],
+                inner_path: "deep/c.ymap".to_string(),
+            },
+        ] {
+            let mut buf = Vec::new();
+            write_loc(&mut buf, &original);
+            let mut c = Cursor { data: &buf, pos: 0 };
+            assert_eq!(read_loc(&mut c).expect("should read back"), original);
+            assert_eq!(c.pos, buf.len(), "read_loc should consume exactly what write_loc wrote");
+        }
+    }
+
+    #[test]
+    fn summary_counts_the_interior_maps() {
+        let mut index = GameIndex::default();
+        index.mlo_ytyp.insert(1, loc("i.ytyp"));
+        index.mlo_instances.insert(1, vec![loc("a.ymap"), loc("b.ymap")]);
+        index.ybn_by_name.insert(2, loc("i.ybn"));
+
+        let summary = index.summary();
+        assert!(summary.contains("1 interiors"), "{summary}");
+        assert!(summary.contains("2 interior placements"), "{summary}");
+        assert!(summary.contains("1 collision files"), "{summary}");
     }
 
     #[test]

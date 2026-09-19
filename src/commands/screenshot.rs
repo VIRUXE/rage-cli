@@ -417,45 +417,6 @@ fn report_failed(failed: &[String], source: &str) {
     }
 }
 
-/// Loads the cached game-wide texture index, building and caching it if
-/// there's none yet. `None` (with a warning, not an error — the same-stem
-/// guess still applies) when there's no `--exe`/`GTAV_PATH` to find the game
-/// directory from, or the build itself fails.
-fn load_or_build_index(exe: Option<&std::path::Path>, keys: Option<&GtaKeys>) -> Option<GameIndex> {
-    let exe = exe?;
-    let exe_path = match crate::keys::resolve_exe(exe) {
-        Ok(p) => p,
-        Err(err) => { eprintln!("warning: couldn't resolve --exe for the texture index: {err}"); return None; }
-    };
-    let game_root = exe_path.parent()?.to_path_buf();
-
-    let cache_path = GameIndex::cache_path(&exe_path);
-
-    if let Some(path) = &cache_path
-        && path.is_file()
-    {
-        match GameIndex::load_cached(path) {
-            Ok(index) => return Some(index),
-            Err(err) => eprintln!("texture index cache at {} is invalid ({err}); rebuilding", path.display()),
-        }
-    }
-
-    println!("Building texture index for {} (one-off; cached for next time)...", game_root.display());
-    let index = match GameIndex::build(&game_root, keys) {
-        Ok(index) => index,
-        Err(err) => { eprintln!("warning: failed to build texture index: {err}"); return None; }
-    };
-    println!("Texture index: {}", index.summary());
-
-    if let Some(path) = &cache_path
-        && let Err(err) = index.save_cached(path)
-    {
-        eprintln!("warning: failed to cache texture index: {err}");
-    }
-
-    Some(index)
-}
-
 pub fn run(args: &ScreenshotArgs, keys: Option<&GtaKeys>, exe: Option<&std::path::Path>) -> Result<()> {
     let archive = Archive::open(&args.archive, keys)?;
     archive.require_keys(keys)?;
@@ -474,7 +435,7 @@ pub fn run(args: &ScreenshotArgs, keys: Option<&GtaKeys>, exe: Option<&std::path
         anyhow::bail!("'{}' holds no drawables", args.file);
     }
 
-    let index = if args.no_index { None } else { load_or_build_index(exe, keys) };
+    let index = if args.no_index { None } else { GameIndex::load_or_build(exe, keys) };
     let mut textures = build_texture_set(&archive, args, &loaded, keys, index.as_ref());
     let mut resident_loaded: Vec<u32> = Vec::new();
 
