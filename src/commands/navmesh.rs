@@ -31,6 +31,8 @@ pub enum NavmeshCommand {
     YbnObj(YbnObjArgs),
     /// Generate interior polygons from collision and append them to a cell
     Build(BuildArgs),
+    /// Parse a .ynv and write it back out unchanged (checks the writer against the game)
+    Rewrite(ExportArgs),
 }
 
 #[derive(clap::Args)]
@@ -114,6 +116,7 @@ pub fn run(args: &NavmeshArgs, keys: Option<&GtaKeys>, exe: Option<&Path>) -> Re
         NavmeshCommand::Export(a) => run_export(a),
         NavmeshCommand::YbnObj(a) => run_ybn_obj(a),
         NavmeshCommand::Build(a) => run_build(a),
+        NavmeshCommand::Rewrite(a) => run_rewrite(a),
     }
 }
 
@@ -293,6 +296,15 @@ fn ynv_to_obj(ynv: &Ynv, first_new: Option<usize>) -> String {
         for f in lines { writeln!(out, "{f}").unwrap(); }
     }
     out
+}
+
+fn run_rewrite(args: &ExportArgs) -> Result<()> {
+    let data = std::fs::read(&args.file).with_context(|| format!("reading {}", args.file.display()))?;
+    let ynv = parse_ynv(&data)?;
+    let bytes = serialize_ynv(&ynv)?;
+    std::fs::write(&args.output, &bytes).with_context(|| format!("writing {}", args.output.display()))?;
+    println!("Rewrote {} polygons: {} -> {} bytes, {}", ynv.polys.len(), data.len(), bytes.len(), args.output.display());
+    Ok(())
 }
 
 // ─── ybn-obj ─────────────────────────────────────────────────────────────────
