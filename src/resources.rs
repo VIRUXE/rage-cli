@@ -200,3 +200,31 @@ mod tests {
         assert_eq!(ytd_lookup_name("weird.name.ytd"), "weird.name.ytd");
     }
 }
+
+/// The MLO instance entity of a .ymap (or its first entity) — the placement
+/// that turns an interior's own coordinates into world coordinates.
+pub fn mlo_placement(path: &Path) -> Result<rage_formats::YmapEntity> {
+    let data = fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+    let entities = rage_formats::parse_ymap_entities(&data)?;
+    entities.iter().find(|e| e.is_mlo_instance).or(entities.first()).copied()
+        .with_context(|| format!("{} places no entities", path.display()))
+}
+
+/// Collision triangles of every .ybn in `files`, placed by `placement` when
+/// one is given; reports each file's triangle count on stderr.
+pub fn load_triangles(files: &[std::path::PathBuf], placement: Option<&rage_formats::YmapEntity>) -> Result<Vec<rage_formats::Triangle>> {
+    let mut all = Vec::new();
+    for file in files {
+        let data = fs::read(file).with_context(|| format!("reading {}", file.display()))?;
+        let ybn = rage_formats::parse_ybn(&data).with_context(|| format!("parsing {}", file.display()))?;
+        let mut tris = ybn.triangles();
+        if let Some(e) = placement {
+            for t in &mut tris {
+                for v in &mut t.vertices { *v = e.to_world(*v); }
+            }
+        }
+        eprintln!("{}: {} triangles", file.display(), tris.len());
+        all.extend(tris);
+    }
+    Ok(all)
+}

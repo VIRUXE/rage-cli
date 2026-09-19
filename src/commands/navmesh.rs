@@ -5,13 +5,14 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use rage_formats::{
-    cell_bounds, cell_file_name, cell_for_position, parse_ybn, parse_ymap_entities, parse_ynv, parse_ytyp, rage_joaat,
-    serialize_ynv, Triangle, Vec3, Ynv, YmapEntity,
+    cell_bounds, cell_file_name, cell_for_position, parse_ynv, parse_ytyp, rage_joaat, serialize_ynv, Vec3, Ynv,
+    YmapEntity,
 };
 
 use crate::navmesh::{build, BuildOptions, Footprint};
-use crate::resources::load_resource_bytes;
+use crate::resources::{load_resource_bytes, load_triangles, mlo_placement};
 use crate::rpf::{Archive, GtaKeys};
+use crate::utils::{parse_pair, parse_quad, walkdir};
 
 #[derive(clap::Args)]
 pub struct NavmeshArgs {
@@ -33,34 +34,6 @@ pub enum NavmeshCommand {
     Build(BuildArgs),
     /// Parse a .ynv and write it back out unchanged (checks the writer against the game)
     Rewrite(ExportArgs),
-    /// Draw a top-down PNG of a cell: polygons over the collision floor and walls
-    Plot(PlotArgs),
-}
-
-#[derive(clap::Args)]
-pub struct PlotArgs {
-    /// The .ynv to draw (interior polygons green, sunk red, the rest grey)
-    pub file: PathBuf,
-    /// World XY box to draw: x0,y0,x1,y1 (default: the interior polygons' extent plus 2 m)
-    #[arg(long, value_name = "X0,Y0,X1,Y1")]
-    pub region: Option<String>,
-    /// Collision file(s) to draw underneath (floor light grey, walls at body height blue)
-    #[arg(long, value_name = "FILE")]
-    pub ybn: Vec<PathBuf>,
-    /// Place the collision by this .ymap's MLO instance
-    #[arg(long, value_name = "FILE")]
-    pub ymap: Option<PathBuf>,
-    /// Floor height used to classify collision triangles
-    #[arg(long)]
-    pub floor_z: Option<f32>,
-    /// Markers to draw: "x,y,label"; repeatable
-    #[arg(long, value_name = "X,Y,LABEL")]
-    pub marker: Vec<String>,
-    /// Pixels per metre
-    #[arg(long, default_value = "30")]
-    pub scale: f32,
-    #[arg(short, long, value_name = "FILE")]
-    pub output: PathBuf,
 }
 
 #[derive(clap::Args)]
@@ -171,7 +144,6 @@ pub fn run(args: &NavmeshArgs, keys: Option<&GtaKeys>, exe: Option<&Path>) -> Re
         NavmeshCommand::YbnObj(a) => run_ybn_obj(a),
         NavmeshCommand::Build(a) => run_build(a, exe),
         NavmeshCommand::Rewrite(a) => run_rewrite(a),
-        NavmeshCommand::Plot(a) => run_plot(a),
     }
 }
 
@@ -300,22 +272,6 @@ fn find_in_archive(
     Ok(())
 }
 
-fn parse_pair(s: &str) -> Result<(f32, f32)> {
-    let mut it = s.split(',').map(|p| p.trim().parse::<f32>());
-    match (it.next(), it.next(), it.next()) {
-        (Some(Ok(a)), Some(Ok(b)), None) => Ok((a, b)),
-        _ => bail!("expected two comma-separated numbers, got '{s}'"),
-    }
-}
-
-fn parse_quad(s: &str) -> Result<[f32; 4]> {
-    let vals: Result<Vec<f32>, _> = s.split(',').map(|p| p.trim().parse::<f32>()).collect();
-    match vals {
-        Ok(v) if v.len() == 4 => Ok([v[0], v[1], v[2], v[3]]),
-        _ => bail!("expected four comma-separated numbers, got '{s}'"),
-    }
-}
-
 // ─── export ──────────────────────────────────────────────────────────────────
 
 fn run_export(args: &ExportArgs) -> Result<()> {
@@ -431,142 +387,6 @@ fn prop_footprints(
     Ok(out)
 }
 
-fn walkdir(dir: &Path) -> Result<Vec<PathBuf>> {
-    let mut out = Vec::new();
-    for entry in std::fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))? {
-        let path = entry?.path();
-        if path.is_dir() { out.extend(walkdir(&path)?); } else { out.push(path); }
-    }
-    Ok(out)
-}
-
-// ─── plot ────────────────────────────────────────────────────────────────────
-
-fn run_plot(args: &PlotArgs) -> Result<()> {
-    use rage_formats::image::{Rgba, RgbaImage};
-
-    let data = std::fs::read(&args.file).with_context(|| format!("reading {}", args.file.display()))?;
-    let ynv = parse_ynv(&data)?;
-    let interior: Vec<&rage_formats::NavPoly> = ynv.polys.iter().filter(|p| p.is_interior()).collect();
-    let region = match &args.region {
-        Some(r) => parse_quad(r).context("--region")?,
-        None => {
-            if interior.is_empty() { bail!("no interior polygons to frame; give --region"); }
-            let mut r = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
-            for p in &interior {
-                let (lo, hi) = p.bounds();
-                r[0] = r[0].min(lo.x); r[1] = r[1].min(lo.y); r[2] = r[2].max(hi.x); r[3] = r[3].max(hi.y);
-            }
-            [r[0] - 2.0, r[1] - 2.0, r[2] + 2.0, r[3] + 2.0]
-        }
-    };
-    let [x0, y0, x1, y1] = region;
-    let scale = args.scale.max(1.0);
-    let w = ((x1 - x0) * scale).ceil().max(1.0) as u32;
-    let h = ((y1 - y0) * scale).ceil().max(1.0) as u32;
-    if w * h > 40_000_000 { bail!("{w}x{h} px is too large; lower --scale or shrink --region"); }
-    let mut img = RgbaImage::from_pixel(w, h, Rgba([255, 255, 255, 255]));
-    // y up in the world, down in the image
-    let to_px = |x: f32, y: f32| ((x - x0) * scale, (y1 - y) * scale);
-
-    let floor_z = args.floor_z.or_else(|| interior.first().map(|p| p.centroid().z));
-    if !args.ybn.is_empty() {
-        let placement = match &args.ymap { Some(p) => Some(mlo_placement(p)?), None => None };
-        let tris = load_triangles(&args.ybn, placement.as_ref())?;
-        let fz = floor_z.context("--floor-z is needed to classify collision when the cell has no interior polygons")?;
-        for t in &tris {
-            let n = t.normal();
-            let zc = (t.vertices[0].z + t.vertices[1].z + t.vertices[2].z) / 3.0;
-            let zlo = t.vertices.iter().map(|v| v.z).fold(f32::MAX, f32::min);
-            let zhi = t.vertices.iter().map(|v| v.z).fold(f32::MIN, f32::max);
-            let pts: Vec<(f32, f32)> = t.vertices.iter().map(|v| to_px(v.x, v.y)).collect();
-            if n.z > 0.7 && (zc - fz).abs() < 0.6 {
-                fill_polygon(&mut img, &pts, Rgba([225, 225, 225, 255]));
-            } else if n.z.abs() < 0.7 && zlo < fz + 0.45 && zhi > fz + 0.15 {
-                stroke_polygon(&mut img, &pts, Rgba([120, 120, 255, 255]));
-            }
-        }
-    }
-    for p in &ynv.polys {
-        let pts: Vec<(f32, f32)> = p.vertices.iter().map(|v| to_px(v.x, v.y)).collect();
-        if pts.iter().all(|&(x, y)| x < 0.0 || y < 0.0 || x > w as f32 || y > h as f32) { continue; }
-        let sunk = p.vertices.iter().all(|v| (v.z - ynv.bb_min.z).abs() < 1e-3);
-        if sunk {
-            stroke_polygon(&mut img, &pts, Rgba([220, 40, 40, 255]));
-        } else if p.is_interior() {
-            fill_polygon(&mut img, &pts, Rgba([120, 210, 120, 140]));
-            stroke_polygon(&mut img, &pts, Rgba([0, 120, 0, 255]));
-        } else {
-            stroke_polygon(&mut img, &pts, Rgba([170, 170, 170, 255]));
-        }
-    }
-    for m in &args.marker {
-        let mut it = m.splitn(3, ',');
-        let (Some(x), Some(y)) = (it.next().and_then(|v| v.trim().parse::<f32>().ok()), it.next().and_then(|v| v.trim().parse::<f32>().ok())) else {
-            bail!("--marker expects x,y,label; got '{m}'");
-        };
-        let label = it.next().unwrap_or("");
-        let (px, py) = to_px(x, y);
-        let r = 4.0;
-        fill_polygon(&mut img, &[(px - r, py - r), (px + r, py - r), (px + r, py + r), (px - r, py + r)], Rgba([0, 0, 0, 255]));
-        rage_render::draw_text(&mut img, (px + 6.0) as i32, (py - 4.0) as i32, label, 1, [0, 0, 0, 255]);
-    }
-    img.save(&args.output).with_context(|| format!("writing {}", args.output.display()))?;
-    println!("Wrote {} ({w}x{h}, {} interior polygons, region {x0},{y0}..{x1},{y1})", args.output.display(), interior.len());
-    Ok(())
-}
-
-/// Scanline fill of a simple polygon with alpha blending.
-fn fill_polygon(img: &mut rage_formats::image::RgbaImage, pts: &[(f32, f32)], colour: rage_formats::image::Rgba<u8>) {
-    if pts.len() < 3 { return; }
-    let (w, h) = (img.width() as i32, img.height() as i32);
-    let y_min = pts.iter().map(|p| p.1).fold(f32::MAX, f32::min).floor().max(0.0) as i32;
-    let y_max = pts.iter().map(|p| p.1).fold(f32::MIN, f32::max).ceil().min(h as f32 - 1.0) as i32;
-    let mut xs: Vec<f32> = Vec::new();
-    for y in y_min..=y_max {
-        let sy = y as f32 + 0.5;
-        xs.clear();
-        for i in 0..pts.len() {
-            let (ax, ay) = pts[i];
-            let (bx, by) = pts[(i + 1) % pts.len()];
-            if (ay <= sy && by > sy) || (by <= sy && ay > sy) {
-                xs.push(ax + (sy - ay) / (by - ay) * (bx - ax));
-            }
-        }
-        xs.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        for pair in xs.chunks(2) {
-            if pair.len() < 2 { break; }
-            let xa = pair[0].round().max(0.0) as i32;
-            let xb = pair[1].round().min(w as f32 - 1.0) as i32;
-            for x in xa..=xb {
-                blend(img, x, y, colour);
-            }
-        }
-    }
-}
-
-fn stroke_polygon(img: &mut rage_formats::image::RgbaImage, pts: &[(f32, f32)], colour: rage_formats::image::Rgba<u8>) {
-    for i in 0..pts.len() {
-        let (ax, ay) = pts[i];
-        let (bx, by) = pts[(i + 1) % pts.len()];
-        let steps = ((bx - ax).abs().max((by - ay).abs())).ceil().max(1.0) as i32;
-        for s in 0..=steps {
-            let t = s as f32 / steps as f32;
-            blend(img, (ax + (bx - ax) * t).round() as i32, (ay + (by - ay) * t).round() as i32, colour);
-        }
-    }
-}
-
-fn blend(img: &mut rage_formats::image::RgbaImage, x: i32, y: i32, c: rage_formats::image::Rgba<u8>) {
-    if x < 0 || y < 0 || x >= img.width() as i32 || y >= img.height() as i32 { return; }
-    let p = img.get_pixel_mut(x as u32, y as u32);
-    let a = c.0[3] as u32;
-    for k in 0..3 {
-        p.0[k] = ((c.0[k] as u32 * a + p.0[k] as u32 * (255 - a)) / 255) as u8;
-    }
-    p.0[3] = 255;
-}
-
 // ─── ybn-obj ─────────────────────────────────────────────────────────────────
 
 fn run_ybn_obj(args: &YbnObjArgs) -> Result<()> {
@@ -585,31 +405,6 @@ fn run_ybn_obj(args: &YbnObjArgs) -> Result<()> {
     std::fs::write(&args.output, out).with_context(|| format!("writing {}", args.output.display()))?;
     println!("Wrote {} triangles to {}", tris.len(), args.output.display());
     Ok(())
-}
-
-/// The MLO instance entity of a .ymap (or its first entity).
-fn mlo_placement(path: &Path) -> Result<YmapEntity> {
-    let data = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
-    let entities = parse_ymap_entities(&data)?;
-    entities.iter().find(|e| e.is_mlo_instance).or(entities.first()).copied()
-        .with_context(|| format!("{} places no entities", path.display()))
-}
-
-fn load_triangles(files: &[PathBuf], placement: Option<&YmapEntity>) -> Result<Vec<Triangle>> {
-    let mut all = Vec::new();
-    for file in files {
-        let data = std::fs::read(file).with_context(|| format!("reading {}", file.display()))?;
-        let ybn = parse_ybn(&data).with_context(|| format!("parsing {}", file.display()))?;
-        let mut tris = ybn.triangles();
-        if let Some(e) = placement {
-            for t in &mut tris {
-                for v in &mut t.vertices { *v = e.to_world(*v); }
-            }
-        }
-        eprintln!("{}: {} triangles", file.display(), tris.len());
-        all.extend(tris);
-    }
-    Ok(all)
 }
 
 // ─── build ───────────────────────────────────────────────────────────────────

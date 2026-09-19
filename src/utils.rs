@@ -71,3 +71,32 @@ mod tests {
         assert!(!matches_pattern("levels/other.rpf", "inner.rpf"));
     }
 }
+
+/// Every file under `dir`, recursively.
+pub fn walkdir(dir: &std::path::Path) -> anyhow::Result<Vec<std::path::PathBuf>> {
+    use anyhow::Context as _;
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))? {
+        let path = entry?.path();
+        if path.is_dir() { out.extend(walkdir(&path)?); } else { out.push(path); }
+    }
+    Ok(out)
+}
+
+/// `"X,Y"` as a pair of numbers — a world position, a cell index, a band.
+pub fn parse_pair(s: &str) -> anyhow::Result<(f32, f32)> {
+    let mut it = s.split(',').map(|p| p.trim().parse::<f32>());
+    match (it.next(), it.next(), it.next()) {
+        (Some(Ok(a)), Some(Ok(b)), None) => Ok((a, b)),
+        _ => anyhow::bail!("expected two comma-separated numbers, got '{s}'"),
+    }
+}
+
+/// `"X0,Y0,X1,Y1"` as a world-space box.
+pub fn parse_quad(s: &str) -> anyhow::Result<[f32; 4]> {
+    let vals: Result<Vec<f32>, _> = s.split(',').map(|p| p.trim().parse::<f32>()).collect();
+    match vals {
+        Ok(v) if v.len() == 4 => Ok([v[0], v[1], v[2], v[3]]),
+        _ => anyhow::bail!("expected four comma-separated numbers, got '{s}'"),
+    }
+}
