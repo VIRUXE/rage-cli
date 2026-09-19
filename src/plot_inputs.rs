@@ -2,7 +2,7 @@
 //! folder, or an archetype name — into the parsed pieces a plan is drawn
 //! from. Nothing here parses a format itself: every byte goes to rage-formats.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
@@ -20,8 +20,10 @@ use crate::utils::walkdir;
 /// of them to be parsed.
 const MAX_FOLDER_DRAWABLES: usize = 200;
 
-/// Files named on the command line with a `--ymap`/`--ytyp`/`--ybn`/`--ydr`
-/// flag, which say what a file is instead of leaving it to its extension.
+/// Files named with a `--ymap`/`--ytyp`/`--ybn`/`--ydr` flag. The extension
+/// still decides what a file is; what the flag adds is the caller's word
+/// that it belongs to the interior, so `--ybn`/`--ydr` files are placed by
+/// the .ymap whatever they are called.
 #[derive(Default)]
 pub struct Explicit {
     pub ymap: Vec<PathBuf>,
@@ -113,6 +115,8 @@ impl PlotSources {
 enum InputKind {
     Folder(PathBuf),
     File(PathBuf),
+    /// Meant as a path, but nothing is there.
+    Missing(String),
     Archetype(String),
 }
 
@@ -122,9 +126,28 @@ fn classify(input: &str) -> InputKind {
         InputKind::Folder(path)
     } else if path.is_file() {
         InputKind::File(path)
+    } else if looks_like_a_path(input) {
+        InputKind::Missing(input.to_string())
     } else {
         InputKind::Archetype(input.to_string())
     }
+}
+
+/// True when an input reads as a path rather than an archetype name. A
+/// mistyped file name would otherwise be taken for a vanilla interior and
+/// cost a full index build before failing with the wrong complaint.
+fn looks_like_a_path(input: &str) -> bool {
+    if input.contains(['/', '\\']) {
+        return true;
+    }
+    let ext = input.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase());
+    matches!(ext.as_deref(), Some("ynv" | "ybn" | "ymap" | "ytyp" | "ydr" | "ydd"))
+}
+
+/// The path as the filesystem knows it, so the same file reached two ways is
+/// recognised as one. A path that cannot be resolved stands for itself.
+fn canonical(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 /// Reads every input and the explicitly-typed files into one `PlotSources`.
@@ -138,21 +161,28 @@ pub fn resolve(inputs: &[String], explicit: &Explicit, keys: Option<&GtaKeys>, e
             InputKind::Folder(p) | InputKind::File(p) => {
                 p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| first.clone())
             }
-            InputKind::Archetype(name) => name,
+            InputKind::Missing(name) | InputKind::Archetype(name) => name,
         })
         .unwrap_or_default();
 
+    // The flagged files are read first so that each claims its path: the
+    // same file reached again through a folder walk or a positional input is
+    // then left alone, rather than drawn twice — once placed and once in
+    // world space, which shows up as ghost geometry and doubled counts.
+    let mut seen: HashSet<PathBuf> = HashSet::new();
+    for path in &explicit.ybn { add_file(path, true, true, &mut seen, &mut src)?; }
+    for path in &explicit.ydr { add_file(path, true, true, &mut seen, &mut src)?; }
+    for path in &explicit.ymap { add_file(path, true, false, &mut seen, &mut src)?; }
+    for path in &explicit.ytyp { add_file(path, true, false, &mut seen, &mut src)?; }
+
     for input in inputs {
         match classify(input) {
-            InputKind::Folder(dir) => add_folder(&dir, &mut src)?,
-            InputKind::File(path) => add_file(&path, true, false, &mut src)?,
+            InputKind::Folder(dir) => add_folder(&dir, &mut seen, &mut src)?,
+            InputKind::File(path) => add_file(&path, true, false, &mut seen, &mut src)?,
+            InputKind::Missing(name) => bail!("no such file or folder: {name}"),
             InputKind::Archetype(name) => add_archetype(&name, keys, exe, &mut src)?,
         }
     }
-    for path in &explicit.ymap { add_file(path, true, false, &mut src)?; }
-    for path in &explicit.ytyp { add_file(path, true, false, &mut src)?; }
-    for path in &explicit.ybn { add_file(path, true, true, &mut src)?; }
-    for path in &explicit.ydr { add_file(path, true, true, &mut src)?; }
     Ok(src)
 }
 
@@ -170,13 +200,17 @@ fn remember_name(path: &Path, src: &mut PlotSources) {
 /// Reads one file and files its contents under the right kind. `strict` is
 /// on for files the caller named: their problems are errors, not notes.
 /// `explicit` is on for the mesh files `--ybn`/`--ydr` named, which the
-/// caller has declared part of the interior.
-fn add_file(path: &Path, strict: bool, explicit: bool, src: &mut PlotSources) -> Result<()> {
+/// caller has declared part of the interior. `seen` holds the paths already
+/// read, so no file joins the plan twice.
+fn add_file(path: &Path, strict: bool, explicit: bool, seen: &mut HashSet<PathBuf>, src: &mut PlotSources) -> Result<()> {
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
     if !matches!(ext.as_str(), "ynv" | "ybn" | "ymap" | "ytyp" | "ydr" | "ydd") {
         if strict {
             eprintln!("{}: not a file `plot` can draw (.ynv .ybn .ymap .ytyp .ydr .ydd); ignored", name_of(path));
         }
+        return Ok(());
+    }
+    if !seen.insert(canonical(path)) {
         return Ok(());
     }
     remember_name(path, src);
@@ -232,7 +266,7 @@ fn add_file(path: &Path, strict: bool, explicit: bool, src: &mut PlotSources) ->
 
 /// Walks a FiveM resource folder: every file's stem names an archetype, and
 /// every map, type and geometry file it holds joins the plan.
-fn add_folder(dir: &Path, src: &mut PlotSources) -> Result<()> {
+fn add_folder(dir: &Path, seen: &mut HashSet<PathBuf>, src: &mut PlotSources) -> Result<()> {
     let files = walkdir(dir)?;
     for path in &files {
         remember_name(path, src);
@@ -250,7 +284,7 @@ fn add_folder(dir: &Path, src: &mut PlotSources) -> Result<()> {
         if skip_drawables && is_drawable(path) {
             continue;
         }
-        add_file(path, false, false, src)?;
+        add_file(path, false, false, seen, src)?;
     }
     report_skips(&src.skipped[before..]);
     Ok(())

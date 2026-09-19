@@ -162,4 +162,47 @@ fn navmesh_plot_is_gone() {
     let ynv = write(dir.path(), "cell.ynv", &serialize_ynv(&cell()).unwrap());
     let out = rage(&["navmesh", "plot", &ynv, "-o", dir.path().join("y.png").to_str().unwrap()]);
     assert!(!out.status.success(), "`navmesh plot` should be gone; plotting lives in `rage plot`");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("`navmesh plot` was replaced by `rage plot`"), "an old command line deserves a pointer: {err}");
+    assert!(err.contains("rage plot --help"), "{err}");
+}
+
+#[test]
+fn a_mistyped_path_is_not_looked_up_as_an_archetype() {
+    let dir = tempfile::tempdir().unwrap();
+    let missing = dir.path().join("stream").join("ybn").join("interor.ybn");
+    let out = rage(&["plot", missing.to_str().unwrap(), "-o", dir.path().join("x.png").to_str().unwrap()]);
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("no such file or folder"), "{err}");
+    assert!(err.contains("interor.ybn"), "the error should name the input: {err}");
+    assert!(!err.contains("index"), "a path typo must not send `plot` off to build the game index: {err}");
+
+    // A bare name with no separator and no resource extension is still an
+    // archetype, and still says how to resolve one.
+    let out = rage(&["plot", "v_int_3", "-o", dir.path().join("x.png").to_str().unwrap()]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("GTAV_PATH"));
+}
+
+#[test]
+fn a_file_reached_twice_is_loaded_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let stream = dir.path().join("res").join("stream");
+    std::fs::create_dir_all(&stream).unwrap();
+    let ynv = write(&stream, "cell.ynv", &serialize_ynv(&cell()).unwrap());
+    let res = dir.path().join("res");
+    let png = dir.path().join("out.png");
+
+    let alone = ok(&["plot", &ynv, "-o", png.to_str().unwrap()]);
+    let polys = alone.split_once("; ").expect("counts in the stdout line").1.to_string();
+
+    // The folder walk finds the same file the flag names; it must not be
+    // drawn twice.
+    let both = ok(&["plot", res.to_str().unwrap(), "--ybn", &ynv, "-o", png.to_str().unwrap()]);
+    assert_eq!(both.split_once("; ").unwrap().1, polys, "the cell was counted twice\n{both}");
+
+    // Same file given positionally as well as inside the folder.
+    let twice = ok(&["plot", res.to_str().unwrap(), &ynv, "-o", png.to_str().unwrap()]);
+    assert_eq!(twice.split_once("; ").unwrap().1, polys, "the cell was counted twice\n{twice}");
 }

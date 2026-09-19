@@ -160,7 +160,7 @@ debug logging, `--no-update-check` to skip the daily release check.
 | Command | Does |
 |---|---|
 | `screenshot <archive> <file> [--views ...] [--grid] [--ytd NAME]... [--paint #rrggbb] [--background ...] [--size WxH] [--lod ...] [--entry ...]` | render a `.ydr`/`.ydd`/`.yft` from up to six fixed angles, textures resolved from the file, `--ytd` and the index |
-| `plot <input>... [--ymap\|--ytyp\|--ybn\|--ydr FILE]... [--layers ...] [--floor-z Z\|--z-range LO,HI] [--region ...] [--scale PX] [--marker x,y,label]... [--labels] -o FILE` | a top-down plan of an interior — rooms, portals, props, collision, drawable shell and navmesh — as PNG, JPG, WebP or SVG |
+| `plot <input>... [--ymap\|--ytyp\|--ybn\|--ydr FILE]... [--layers ...] [--floor-z Z\|--z-range LO,HI] [--region ...] [--scale PX] [--marker x,y,label]... [--labels] [--title T] [--quality Q] -o FILE` | a top-down plan of an interior — rooms, portals, props, collision, drawable shell and navmesh — as PNG, JPG, WebP or SVG |
 
 ### Navmeshes
 
@@ -417,9 +417,15 @@ Loose files work the same way, either by extension or named explicitly when
 the extension doesn't say enough:
 
 ```sh
-rage plot interior.ytyp interior.ybn interior_milo_.ymap -o plan.svg
+rage plot interior.ytyp interior_milo_.ymap --ybn interior.ybn -o plan.svg
 rage plot --ytyp interior.ytyp --ybn interior.ybn --ymap interior_milo_.ymap -o plan.svg
 ```
+
+The collision goes behind `--ybn` rather than being listed positionally
+because a mesh named there counts as the interior's own and is placed by the
+`.ymap` whatever it is called; a mesh picked up any other way is only placed
+when its name matches the archetype's, since the rest of what a resource
+ships is vanilla map geometry that is already in world coordinates.
 
 A vanilla MLO can be named directly, resolved through the game index
 (`--exe`/`GTAV_PATH`, same as everything else that reads the game):

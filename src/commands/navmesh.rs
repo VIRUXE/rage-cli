@@ -34,6 +34,17 @@ pub enum NavmeshCommand {
     Build(BuildArgs),
     /// Parse a .ynv and write it back out unchanged (checks the writer against the game)
     Rewrite(ExportArgs),
+    /// Gone; kept only so an old command line gets told where plotting went
+    #[command(hide = true)]
+    Plot(MovedPlotArgs),
+}
+
+/// Swallows whatever an old `navmesh plot` line carried, so the command
+/// reaches its own error instead of clap's "unexpected argument".
+#[derive(clap::Args)]
+pub struct MovedPlotArgs {
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    pub rest: Vec<String>,
 }
 
 #[derive(clap::Args)]
@@ -144,6 +155,7 @@ pub fn run(args: &NavmeshArgs, keys: Option<&GtaKeys>, exe: Option<&Path>) -> Re
         NavmeshCommand::YbnObj(a) => run_ybn_obj(a),
         NavmeshCommand::Build(a) => run_build(a, exe),
         NavmeshCommand::Rewrite(a) => run_rewrite(a),
+        NavmeshCommand::Plot(_) => bail!("`navmesh plot` was replaced by `rage plot`; see `rage plot --help`"),
     }
 }
 

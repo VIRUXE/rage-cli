@@ -231,6 +231,9 @@ struct Placement {
     instance: Option<MloInstance>,
     /// The MLO definition the plan is of.
     mlo: Option<MloDef>,
+    /// How many interiors the .ytyp files between them declare: more than
+    /// one and only a .ymap can say which is meant.
+    mlo_count: usize,
 }
 
 impl Placement {
@@ -258,11 +261,13 @@ fn find_placement(sources: &PlotSources) -> Placement {
                     source: Some(name.clone()),
                     instance: Some(instance.clone()),
                     mlo: Some((*mlo).clone()),
+                    mlo_count: mlos.len(),
                 };
             }
         }
     }
     let mlo = mlos.first().map(|m| (*m).clone());
+    let mlo_count = mlos.len();
     for (name, _, instances) in &sources.ymaps {
         if let Some(instance) = instances.first() {
             return Placement {
@@ -270,15 +275,16 @@ fn find_placement(sources: &PlotSources) -> Placement {
                 source: Some(name.clone()),
                 instance: Some(instance.clone()),
                 mlo,
+                mlo_count,
             };
         }
     }
     for (name, entities, _) in &sources.ymaps {
         if let Some(entity) = entities.first() {
-            return Placement { entity: Some(*entity), source: Some(name.clone()), instance: None, mlo };
+            return Placement { entity: Some(*entity), source: Some(name.clone()), instance: None, mlo, mlo_count };
         }
     }
-    Placement { entity: None, source: None, instance: None, mlo }
+    Placement { entity: None, source: None, instance: None, mlo, mlo_count }
 }
 
 /// Whether a mesh file is the interior's own — and so has to go through the
@@ -529,6 +535,19 @@ fn build_scene(
         Some(ymap) => scene.caption.push(format!("placement: {ymap}")),
         None if needs_placing => scene.caption.push("MLO-local coordinates (no ymap given)".to_string()),
         None => {}
+    }
+    // With no .ymap, nothing says which of several declared interiors was
+    // meant, so the first is drawn and the page says so.
+    if placement.source.is_none() && placement.mlo_count > 1 {
+        if let Some(mlo) = &placement.mlo {
+            let line = format!(
+                "{} interiors loaded, drawing {} (give the .ymap to pick one)",
+                placement.mlo_count,
+                name_of(mlo.name_hash)
+            );
+            eprintln!("warning: {line}");
+            scene.caption.push(line);
+        }
     }
     scene.caption.push(band);
     if estimated_rooms {
