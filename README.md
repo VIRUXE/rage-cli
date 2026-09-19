@@ -160,6 +160,7 @@ debug logging, `--no-update-check` to skip the daily release check.
 | Command | Does |
 |---|---|
 | `screenshot <archive> <file> [--views ...] [--grid] [--ytd NAME]... [--paint #rrggbb] [--background ...] [--size WxH] [--lod ...] [--entry ...]` | render a `.ydr`/`.ydd`/`.yft` from up to six fixed angles, textures resolved from the file, `--ytd` and the index |
+| `plot <input>... [--ymap\|--ytyp\|--ybn\|--ydr FILE]... [--layers ...] [--floor-z Z\|--z-range LO,HI] [--region ...] [--scale PX] [--marker x,y,label]... [--labels] -o FILE` | a top-down plan of an interior — rooms, portals, props, collision, drawable shell and navmesh — as PNG, JPG, WebP or SVG |
 
 ### Navmeshes
 
@@ -170,7 +171,6 @@ debug logging, `--no-update-check` to skip the daily release check.
 | `navmesh export <ynv> -o OBJ` | polygons as OBJ, grouped exterior/interior/sunk |
 | `navmesh ybn-obj <ybn> [--ymap FILE] -o OBJ` | a collision file's triangles as OBJ, placed in the world by the ymap's MLO instance |
 | `navmesh build <cell> --ybn FILE... --clip x0,y0,x1,y1 --floor-z Z -o FILE [...]` | generate interior polygons from collision and append them to the cell; see [Building a navmesh for an interior](#building-a-navmesh-for-an-interior) |
-| `navmesh plot <ynv> [--ybn ...] [--ymap ...] [--marker x,y,label]... -o PNG` | top-down picture of a cell over its collision |
 | `navmesh rewrite <ynv> -o FILE` | parse and write back unchanged; checks the writer against the game |
 
 ### Game index and maintenance
@@ -430,8 +430,9 @@ rage navmesh build cell.ynv \
     -o "navmesh[108][96].ynv"
 
 # 4. look before you ship
-rage navmesh plot "navmesh[108][96].ynv" --ybn stream/ybn/interior.ybn --ymap stream/ymap/interior_milo_.ymap \
-    --marker=-578.5,-1061.5,Mochi -o check.png
+rage plot "navmesh[108][96].ynv" stream/ytyp/interior_int.ytyp \
+    --ybn stream/ybn/interior.ybn --ymap stream/ymap/interior_milo_.ymap \
+    --floor-z 21.25 --marker=-578.5,-1061.5,Mochi -o check.png
 ```
 
 What `build` does, in order:
