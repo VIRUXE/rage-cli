@@ -275,7 +275,12 @@ rage navmesh info "navmesh[108][96].ynv"                       # cell, bounds, p
 rage navmesh cell --exe "<GTA V>" --at=-578,-1061 -o cell.ynv  # the cell under a world position, from whichever archive loads last
 rage navmesh export cell.ynv -o cell.obj                       # polygons as OBJ (exterior/interior/sunk groups)
 rage navmesh ybn-obj interior.ybn --ymap interior_milo.ymap -o collision.obj   # an MLO's collision, placed in the world
-rage navmesh build cell.ynv --ybn interior.ybn --ymap interior_milo.ymap     --clip=-600,-1070,-566,-1050 --floor-z 21.25 -o "navmesh[108][96].ynv" --obj check.obj
+rage navmesh build cell.ynv --ybn interior.ybn --ymap interior_milo.ymap \
+    --clip=-600,-1070,-566,-1050 --floor-z 21.25 -o "navmesh[108][96].ynv" --obj check.obj
+rage navmesh build cell.ynv --ybn interior.ybn --ymap interior_milo.ymap \
+    --ytyp interior_int.ytyp --ytyp interior_props.ytyp --names-from stream/ydr --game-props \
+    --clip=-600,-1070,-566,-1050 --floor-z 21.25 -o "navmesh[108][96].ynv"
+rage navmesh plot "navmesh[108][96].ynv" --ybn interior.ybn --ymap interior_milo.ymap --marker=-578.5,-1061.5,Mochi -o check.png
 ```
 
 `build` rasterises the collision's walkable floor onto a grid (`--grid`,
@@ -289,6 +294,20 @@ every edge from the neighbouring cells — valid. Furniture whose collision
 lives in escrowed `.ydr`s can be excluded with `--block x0,y0,x1,y1`. Drop
 the result in a resource's `stream/` folder and FiveM streams it over the
 game's cell.
+
+Furniture is the catch: an MLO's props keep their collision inside their
+`.ydr` files, which are escrow-encrypted, so the `.ybn` only has the shell.
+`--ytyp` reads the MLO definition and every archetype's bounding box, places
+each prop through the entity and MLO transforms, and blocks its footprint
+where the box meets the body slab. A prop counts as furniture when it stands
+on the floor, rises above `--step-height` and its footprint is under
+`--max-prop-area`; room shells, light proxies, doors, windows and carpets
+are skipped by name fragment (add more with `--ignore-entity`, force one
+with `--block-entity`), and the build prints one line per prop saying what
+it decided. `--game-props` fetches the boxes of vanilla props the MLO
+places from the texture index (`rage index build` stores them). `plot`
+draws the result over the collision so the decisions can be checked at a
+glance.
 
 ## Keys
 
