@@ -4,9 +4,9 @@
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
-use rpf_archive::{parse_drawables, parse_ytd, resource::prepare_rsc7, resource_size_from_flags,
-                  resource_version_from_flags, DrawableEntry, DrawableKind, YtdTexture,
-                  RSC7_MAGIC, RSC8_MAGIC};
+use rage_formats::{parse_drawables, parse_ytd, prepare_rsc7, resource_size_from_flags,
+                   resource_version_from_flags, DrawableEntry, DrawableKind, YtdTexture,
+                   RSC7_MAGIC, RSC8_MAGIC};
 
 use crate::resources::load_resource_bytes;
 use crate::rpf::GtaKeys;
@@ -267,11 +267,11 @@ fn json_textures(textures: &[YtdTexture]) -> String {
     format!("[{}]", items.join(","))
 }
 
-fn json_vec3(v: &rpf_archive::Vec3) -> String {
+fn json_vec3(v: &rage_formats::Vec3) -> String {
     format!("[{},{},{}]", v.x, v.y, v.z)
 }
 
-fn json_geometry_bounds(geoms: &[rpf_archive::GeometryBounds]) -> String {
+fn json_geometry_bounds(geoms: &[rage_formats::GeometryBounds]) -> String {
     let items: Vec<String> = geoms.iter().map(|g| format!(
         "{{\"model\":{},\"geometry\":{},\"shader\":{},\"vertices\":{},\"triangles\":{},\"min\":{},\"max\":{},\"centroid\":{}}}",
         g.model, g.geometry, g.shader_id, g.vertices, g.triangles,

@@ -1,8 +1,9 @@
 use anyhow::{Context, Result};
 use std::path::PathBuf;
 
-use rpf_archive::{compose_sheet, encode_image, render_parts, wheel_slot, DrawableEntry, ImageFormat,
-                  LodLevel, RenderOptions, RenderPart, SheetItem, SheetOptions, TextureSet, View};
+use rage_formats::{encode_image, wheel_slot, DrawableEntry, ImageFormat, LodLevel};
+use rage_render::{compose_sheet, render_parts, RenderOptions, RenderPart, SheetItem, SheetOptions,
+                  TextureSet, View};
 
 use crate::index::GameIndex;
 use crate::resources::{embedded_textures_of, file_stem, load_renderables, load_texture_dictionary, sanitize,
@@ -201,7 +202,7 @@ fn unique_views(views: &[View]) -> Vec<View> {
 /// names no diffuse texture are called out separately from the untextured
 /// total, since no `--ytd` can supply one; the clause is left out when
 /// there are none. `parts` is the composite suffix, already comma-led.
-fn summary_line(label: &str, report: &rpf_archive::RenderReport, parts: &str) -> String {
+fn summary_line(label: &str, report: &rage_render::RenderReport, parts: &str) -> String {
     let no_diffuse = if report.geometries_without_diffuse > 0 {
         format!(", {} with no diffuse", report.geometries_without_diffuse)
     } else {
@@ -340,13 +341,13 @@ fn build_texture_set(
     // The index-driven order (archetype's own texture dictionary, then the
     // same-stem guess, then any parent chain) is a strict superset of the
     // no-index fallback above, searched game-wide instead of one archive.
-    let stem_hash = rpf_archive::rage_joaat(&file_stem(&args.file).to_lowercase());
+    let stem_hash = rage_formats::rage_joaat(&file_stem(&args.file).to_lowercase());
     for txd_hash in index.resolution_order(stem_hash) {
         let Some(loc) = index.ytd_by_name.get(&txd_hash) else {
             log::debug!("no .ytd for txd hash {txd_hash:08X} in the resolution order");
             continue;
         };
-        match index.load_bytes(loc, keys).and_then(|data| rpf_archive::parse_ytd(&data).map_err(Into::into)) {
+        match index.load_bytes(loc, keys).and_then(|data| rage_formats::parse_ytd(&data).map_err(Into::into)) {
             Ok(textures) => {
                 println!("Using texture dictionary {} ({} texture(s), via index)", loc.inner_path, textures.len());
                 report_failed(&set.push_layer(&textures), &loc.inner_path);
@@ -379,7 +380,7 @@ fn push_resident_fallback(
 ) -> bool {
     let mut wanted: Vec<u32> = Vec::new();
     for name in missing {
-        let Some(dict) = index.resident_dict_for_texture(rpf_archive::rage_joaat(&name.to_lowercase())) else {
+        let Some(dict) = index.resident_dict_for_texture(rage_formats::rage_joaat(&name.to_lowercase())) else {
             continue;
         };
         if !already_loaded.contains(&dict) && !wanted.contains(&dict) {
@@ -397,7 +398,7 @@ fn push_resident_fallback(
             log::debug!("resident dictionary {dict:08X} has no .ytd in the index");
             continue;
         };
-        match index.load_bytes(loc, keys).and_then(|d| rpf_archive::parse_ytd(&d).map_err(Into::into)) {
+        match index.load_bytes(loc, keys).and_then(|d| rage_formats::parse_ytd(&d).map_err(Into::into)) {
             Ok(textures) => {
                 println!("Using resident texture dictionary {} ({} texture(s), via index)", loc.inner_path, textures.len());
                 report_failed(&set.push_layer(&textures), &loc.inner_path);
@@ -676,11 +677,11 @@ mod tests {
         assert_eq!(image_file_name("prop_x", None, Some("grid"), "png"), "prop_x_grid.png");
     }
 
-    fn stub_drawable(name: &str, models: usize) -> rpf_archive::Drawable {
-        use rpf_archive::{Drawable, DrawableBounds, DrawableLod, DrawableModel, Vec3};
+    fn stub_drawable(name: &str, models: usize) -> rage_formats::Drawable {
+        use rage_formats::{Drawable, DrawableBounds, DrawableLod, DrawableModel, Vec3};
         Drawable {
             name: name.to_string(),
-            name_hash: rpf_archive::rage_joaat(name),
+            name_hash: rage_formats::rage_joaat(name),
             bounds: DrawableBounds { center: Vec3::ZERO, sphere_radius: 0.0, box_min: Vec3::ZERO, box_max: Vec3::ZERO },
             lod_distances: [0.0; 4],
             render_masks: [0; 4],
@@ -699,9 +700,9 @@ mod tests {
     /// entries of their own.
     #[test]
     fn fragment_becomes_one_composite_entry_plus_its_extras() {
-        use rpf_archive::{Fragment, FragmentChild, Mat4, Vec3};
+        use rage_formats::{Fragment, FragmentChild, Mat4, Vec3};
 
-        let child = |bone_tag: u16, drawable: Option<rpf_archive::Drawable>| FragmentChild {
+        let child = |bone_tag: u16, drawable: Option<rage_formats::Drawable>| FragmentChild {
             group_index: 0,
             bone_tag,
             drawable,
@@ -713,7 +714,7 @@ mod tests {
             bound_radius: 1.0,
             drawable: Some(stub_drawable("adder", 1)),
             extra_drawables: vec![DrawableEntry {
-                hash: rpf_archive::rage_joaat("adder_hi"),
+                hash: rage_formats::rage_joaat("adder_hi"),
                 name: "adder_hi".to_string(),
                 drawable: stub_drawable("adder_hi", 1),
             }],
@@ -731,7 +732,7 @@ mod tests {
 
         assert_eq!(renderables.len(), 2);
         assert_eq!(renderables[0].label, "adder");
-        assert_eq!(renderables[0].hash, rpf_archive::rage_joaat("adder"));
+        assert_eq!(renderables[0].hash, rage_formats::rage_joaat("adder"));
         assert_eq!(renderables[0].parts.len(), 4, "body, two wheels and a door");
         assert_eq!(renderables[0].wheels, 2);
         assert_eq!(renderables[1].label, "adder_hi");
@@ -766,7 +767,7 @@ mod tests {
     /// no `--ytd` can fix them; when there are none the line is unchanged.
     #[test]
     fn summary_line_mentions_geometries_with_no_diffuse_only_when_present() {
-        let mut report = rpf_archive::RenderReport::default();
+        let mut report = rage_render::RenderReport::default();
         report.triangles = 10;
         report.geometries = 4;
         report.untextured_geometries = 2;
@@ -789,7 +790,7 @@ mod tests {
     /// the old strings verbatim, keeping past batch runs comparable.
     #[test]
     fn summary_line_reports_clustered_framing() {
-        let mut report = rpf_archive::RenderReport::default();
+        let mut report = rage_render::RenderReport::default();
         report.triangles = 36;
         report.geometries = 2;
         report.lod = Some(LodLevel::High);

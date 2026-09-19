@@ -1,16 +1,16 @@
 [package]
-name = "rpf-cli"
+name = "rage-cli"
 version = "0.16.0"
 edition = "2024"
 authors = ["VIRUXE"]
-description = "Command-line tool for working with Rockstar Package Files (RPF)"
+description = "Swiss-army CLI for RAGE game files: RPF archives, RSC7 resources, textures, renders and navmeshes"
 license = "Unlicense"
-repository = "https://github.com/VIRUXE/rpf-cli"
-keywords = ["gta", "rage", "rpf", "archive", "gta5"]
+repository = "https://github.com/VIRUXE/rage-cli"
+keywords = ["gta", "rage", "rpf", "gta5", "modding"]
 categories = ["command-line-utilities", "compression", "parsing"]
 
 [[bin]]
-name = "rpf"
+name = "rage"
 path = "src/main.rs"
 
 [dependencies]
@@ -19,7 +19,9 @@ thiserror = "1.0"
 log = "0.4"
 env_logger = "0.11"
 clap = { version = "4.5", features = ["derive", "env"] }
-rpf-archive = "0.9.4"
+rpf-archive = { version = "0.10", path = "../rpf-archive-rs" }
+rage-formats = { version = "0.1", path = "../rage-formats" }
+rage-render = { version = "0.1", path = "../rage-render" }
 ureq = "3.4"
 json = "0.12"
 sha2 = "0.10"

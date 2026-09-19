@@ -1,6 +1,6 @@
 {
-  "url": "https://api.github.com/repos/VIRUXE/rpf-cli/releases/123456789",
-  "html_url": "https://github.com/VIRUXE/rpf-cli/releases/tag/v0.12.2",
+  "url": "https://api.github.com/repos/VIRUXE/rage-cli/releases/123456789",
+  "html_url": "https://github.com/VIRUXE/rage-cli/releases/tag/v0.12.2",
   "id": 123456789,
   "tag_name": "v0.12.2",
   "target_commitish": "main",
@@ -11,22 +11,22 @@
   "published_at": "2026-09-14T18:29:07Z",
   "assets": [
     {
-      "name": "rpf-linux-x86_64",
+      "name": "rage-linux-x86_64",
       "content_type": "application/octet-stream",
       "size": 4300000,
-      "browser_download_url": "https://github.com/VIRUXE/rpf-cli/releases/download/v0.12.2/rpf-linux-x86_64"
+      "browser_download_url": "https://github.com/VIRUXE/rage-cli/releases/download/v0.12.2/rage-linux-x86_64"
     },
     {
-      "name": "rpf-windows-x86_64.exe",
+      "name": "rage-windows-x86_64.exe",
       "content_type": "application/octet-stream",
       "size": 4500000,
-      "browser_download_url": "https://github.com/VIRUXE/rpf-cli/releases/download/v0.12.2/rpf-windows-x86_64.exe"
+      "browser_download_url": "https://github.com/VIRUXE/rage-cli/releases/download/v0.12.2/rage-windows-x86_64.exe"
     },
     {
       "name": "SHA256SUMS",
       "content_type": "text/plain",
       "size": 150,
-      "browser_download_url": "https://github.com/VIRUXE/rpf-cli/releases/download/v0.12.2/SHA256SUMS"
+      "browser_download_url": "https://github.com/VIRUXE/rage-cli/releases/download/v0.12.2/SHA256SUMS"
     }
   ],
   "body": "See CHANGELOG for details."

@@ -26,12 +26,12 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-musl
-            bin: rpf
-            asset: rpf-linux-x86_64
+            bin: rage
+            asset: rage-linux-x86_64
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            bin: rpf.exe
-            asset: rpf-windows-x86_64.exe
+            bin: rage.exe
+            asset: rage-windows-x86_64.exe
 
     steps:
       - name: Checkout
@@ -77,6 +77,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           tag="${{ github.event.inputs.tag || github.ref_name }}"
-          gh release download "$tag" -p 'rpf-linux-x86_64' -p 'rpf-windows-x86_64.exe' -D dist
-          (cd dist && sha256sum rpf-linux-x86_64 rpf-windows-x86_64.exe > SHA256SUMS)
+          gh release download "$tag" -p 'rage-linux-x86_64' -p 'rage-windows-x86_64.exe' -D dist
+          (cd dist && sha256sum rage-linux-x86_64 rage-windows-x86_64.exe > SHA256SUMS)
           gh release upload "$tag" dist/SHA256SUMS --clobber

@@ -5,8 +5,9 @@ use anyhow::{Context, Result};
 use std::fs;
 use std::path::Path;
 
-use rpf_archive::{parse_drawables, parse_yft, parse_ytd, Drawable, DrawableEntry, DrawableKind, Fragment,
-                  RpfEntryKind, YtdTexture};
+use rage_formats::{parse_drawables, parse_yft, parse_ytd, Drawable, DrawableEntry, DrawableKind, Fragment,
+                   YtdTexture};
+use rpf_archive::RpfEntryKind;
 
 use crate::rpf::{Archive, GtaKeys};
 

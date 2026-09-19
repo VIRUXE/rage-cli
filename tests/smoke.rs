@@ -6,15 +6,15 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-use rpf_archive::image;
+use rage_formats::image;
 
 /// Runs the built `rpf` binary and fails the test if it does not exit 0.
 fn rpf(args: &[&str]) -> Output {
-    let output = Command::new(env!("CARGO_BIN_EXE_rpf"))
+    let output = Command::new(env!("CARGO_BIN_EXE_rage"))
         .args(args)
-        .env("RPF_NO_UPDATE_CHECK", "1")
+        .env("RAGE_NO_UPDATE_CHECK", "1")
         .output()
-        .expect("failed to run the rpf binary");
+        .expect("failed to run the rage binary");
 
     assert!(
         output.status.success(),

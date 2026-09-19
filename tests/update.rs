@@ -5,11 +5,11 @@
 use std::process::{Command, Output};
 
 fn rpf(args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_rpf"))
+    Command::new(env!("CARGO_BIN_EXE_rage"))
         .args(args)
-        .env("RPF_NO_UPDATE_CHECK", "1")
+        .env("RAGE_NO_UPDATE_CHECK", "1")
         .output()
-        .expect("failed to run the rpf binary")
+        .expect("failed to run the rage binary")
 }
 
 #[test]
@@ -41,7 +41,7 @@ fn update_install_help_mentions_flags() {
 #[test]
 fn a_normal_command_never_prints_an_update_note_on_a_piped_run() {
     // stderr is piped by Command::output(), so the daily check must never
-    // fire at all here regardless of RPF_NO_UPDATE_CHECK.
+    // fire at all here regardless of RAGE_NO_UPDATE_CHECK.
     let output = rpf(&["--version"]);
     assert!(output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);

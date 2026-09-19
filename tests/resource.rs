@@ -6,11 +6,11 @@ use std::process::{Command, Output};
 use rpf_archive::{RpfBuilder, RpfEncryption};
 
 fn rpf(args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_rpf"))
+    Command::new(env!("CARGO_BIN_EXE_rage"))
         .args(args)
-        .env("RPF_NO_UPDATE_CHECK", "1")
+        .env("RAGE_NO_UPDATE_CHECK", "1")
         .output()
-        .expect("failed to run the rpf binary")
+        .expect("failed to run the rage binary")
 }
 
 fn ok(args: &[&str]) -> String {

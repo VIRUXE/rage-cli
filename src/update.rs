@@ -59,8 +59,8 @@ pub fn is_newer(latest: &str, current: &str) -> bool {
 /// prebuilt binary for it.
 pub fn asset_for(os: &str, arch: &str) -> Option<&'static str> {
     match (os, arch) {
-        ("windows", "x86_64") => Some("rpf-windows-x86_64.exe"),
-        ("linux", "x86_64") => Some("rpf-linux-x86_64"),
+        ("windows", "x86_64") => Some("rage-windows-x86_64.exe"),
+        ("linux", "x86_64") => Some("rage-linux-x86_64"),
         _ => None,
     }
 }
@@ -68,7 +68,7 @@ pub fn asset_for(os: &str, arch: &str) -> Option<&'static str> {
 fn agent(total: Duration) -> ureq::Agent {
     ureq::Agent::config_builder()
         .user_agent(concat!(
-            "rpf-cli/", env!("CARGO_PKG_VERSION"), " (+https://github.com/VIRUXE/rpf-cli)"
+            "rage-cli/", env!("CARGO_PKG_VERSION"), " (+https://github.com/VIRUXE/rage-cli)"
         ))
         .timeout_connect(Some(Duration::from_secs(5)))
         .timeout_global(Some(total))
@@ -231,7 +231,7 @@ pub fn install(plan: &Plan) -> Result<()> {
     #[cfg(windows)]
     { let _ = std::fs::remove_file(plan.target.with_extension("old")); }
 
-    let tmp_path = dir.join(format!(".rpf-update-{}.tmp", std::process::id()));
+    let tmp_path = dir.join(format!(".rage-update-{}.tmp", std::process::id()));
     let mut tmp_file = File::create(&tmp_path).with_context(|| format!(
         "cannot write to {}: is the directory writable? re-run with elevated privileges, \
          or reinstall with `cargo install --git https://github.com/{}`",
@@ -301,7 +301,7 @@ struct Stamp {
 }
 
 fn stamp_path() -> Option<PathBuf> {
-    if let Some(p) = std::env::var_os("RPF_UPDATE_CACHE") {
+    if let Some(p) = crate::paths::env_var("RAGE_UPDATE_CACHE") {
         return Some(PathBuf::from(p));
     }
     Some(crate::paths::config_root()?.join("update-check.json"))
@@ -353,7 +353,7 @@ fn note(latest: &str) -> String {
 /// disabled, non-interactive, or simply not due yet.
 pub fn spawn_background_check(disabled: bool) -> Option<Receiver<String>> {
     if disabled
-        || std::env::var_os("RPF_NO_UPDATE_CHECK").is_some()
+        || crate::paths::env_var("RAGE_NO_UPDATE_CHECK").is_some()
         || std::env::var_os("CI").is_some()
     {
         return None;
@@ -452,8 +452,8 @@ mod tests {
 
     #[test]
     fn maps_known_platforms_only() {
-        assert_eq!(asset_for("windows", "x86_64"), Some("rpf-windows-x86_64.exe"));
-        assert_eq!(asset_for("linux", "x86_64"), Some("rpf-linux-x86_64"));
+        assert_eq!(asset_for("windows", "x86_64"), Some("rage-windows-x86_64.exe"));
+        assert_eq!(asset_for("linux", "x86_64"), Some("rage-linux-x86_64"));
         assert_eq!(asset_for("macos", "aarch64"), None);
         assert_eq!(asset_for("linux", "aarch64"), None);
     }
@@ -467,8 +467,8 @@ mod tests {
         let assets: Vec<(String, String)> = parsed["assets"].members().filter_map(|a| {
             Some((a["name"].as_str()?.to_string(), a["browser_download_url"].as_str()?.to_string()))
         }).collect();
-        assert!(assets.iter().any(|(name, _)| name == "rpf-windows-x86_64.exe"));
-        assert!(assets.iter().any(|(name, _)| name == "rpf-linux-x86_64"));
+        assert!(assets.iter().any(|(name, _)| name == "rage-windows-x86_64.exe"));
+        assert!(assets.iter().any(|(name, _)| name == "rage-linux-x86_64"));
     }
 
     #[test]
@@ -476,12 +476,12 @@ mod tests {
         let digest: [u8; 32] = Sha256::digest(b"hello").into();
         let hex = digest.iter().map(|b| format!("{b:02x}")).collect::<String>();
 
-        let sums = format!("{hex}  rpf-linux-x86_64\n");
-        assert!(verify_sha256(&digest, &sums, "rpf-linux-x86_64").is_ok());
-        assert!(verify_sha256(&digest, &sums, "rpf-windows-x86_64.exe").is_err());
+        let sums = format!("{hex}  rage-linux-x86_64\n");
+        assert!(verify_sha256(&digest, &sums, "rage-linux-x86_64").is_ok());
+        assert!(verify_sha256(&digest, &sums, "rage-windows-x86_64.exe").is_err());
 
-        let wrong = format!("{}  rpf-linux-x86_64\n", "0".repeat(64));
-        assert!(verify_sha256(&digest, &wrong, "rpf-linux-x86_64").is_err());
+        let wrong = format!("{}  rage-linux-x86_64\n", "0".repeat(64));
+        assert!(verify_sha256(&digest, &wrong, "rage-linux-x86_64").is_err());
     }
 
     #[test]

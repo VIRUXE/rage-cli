@@ -2,7 +2,7 @@ use anyhow::{bail, Context, Result};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-use rpf_archive::{rage_joaat, resource::prepare_rsc7};
+use rage_formats::{prepare_rsc7, rage_joaat};
 
 use crate::rpf::{Archive, FileRef, GtaKeys};
 use crate::utils::{json_string, matches_pattern};

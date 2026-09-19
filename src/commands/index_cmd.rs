@@ -1,4 +1,4 @@
-// The `rpf index` subcommand: build, inspect, or clear the cached game-wide
+// The `rage index` subcommand: build, inspect, or clear the cached game-wide
 // texture index that `screenshot` uses to resolve external texture
 // dictionaries. See `crate::index` for what the index actually holds.
 
@@ -26,7 +26,7 @@ pub enum IndexCommand {
 }
 
 pub fn run(args: &IndexArgs, keys: Option<&GtaKeys>, exe: Option<&std::path::Path>) -> Result<()> {
-    let exe = exe.context("--exe or GTAV_PATH is required for `rpf index`")?;
+    let exe = exe.context("--exe or GTAV_PATH is required for `rage index`")?;
     let exe_path = crate::keys::resolve_exe(exe)?;
     let game_root = exe_path.parent().context("--exe has no parent directory")?.to_path_buf();
     let cache_path = GameIndex::cache_path(&exe_path);
@@ -49,14 +49,14 @@ pub fn run(args: &IndexArgs, keys: Option<&GtaKeys>, exe: Option<&std::path::Pat
             };
             println!("Cache path: {}", path.display());
             if !path.is_file() {
-                println!("Not built yet — run `rpf index build`.");
+                println!("Not built yet — run `rage index build`.");
                 return Ok(());
             }
             let size = std::fs::metadata(&path)?.len();
             let index = match GameIndex::load_cached(&path) {
                 Ok(index) => index,
                 Err(_) => {
-                    println!("Cache is from an older format — run `rpf index build`.");
+                    println!("Cache is from an older format — run `rage index build`.");
                     return Ok(());
                 }
             };

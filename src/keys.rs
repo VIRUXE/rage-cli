@@ -60,10 +60,11 @@ fn cache_entry_for(exe_path: &Path, cache_root: &Path) -> Option<PathBuf> {
     Some(cache_root.join(cache_entry_name(meta.len(), modified)))
 }
 
-/// `~/.rpf-cli/keys` (the home directory is `HOME` first, then
-/// `USERPROFILE`); `RPF_KEYS_CACHE` overrides it.
+/// `~/.rage-cli/keys` (the home directory is `HOME` first, then
+/// `USERPROFILE`); `RAGE_KEYS_CACHE` (or the older `RPF_KEYS_CACHE`)
+/// overrides it.
 fn default_cache_root() -> Option<PathBuf> {
-    if let Some(dir) = std::env::var_os("RPF_KEYS_CACHE") {
+    if let Some(dir) = crate::paths::env_var("RAGE_KEYS_CACHE") {
         return Some(PathBuf::from(dir));
     }
     Some(crate::paths::config_root()?.join("keys"))
@@ -101,8 +102,13 @@ mod tests {
 
     #[test]
     fn default_cache_lives_in_a_dot_folder_under_home() {
+        // `.rpf-cli` is the pre-0.16 name, still used when only it exists.
         let root = default_cache_root().expect("a home directory");
-        assert!(root.ends_with(Path::new(".rpf-cli").join("keys")), "{}", root.display());
+        assert!(
+            root.ends_with(Path::new(".rage-cli").join("keys"))
+                || root.ends_with(Path::new(".rpf-cli").join("keys")),
+            "{}", root.display()
+        );
     }
 
     #[test]

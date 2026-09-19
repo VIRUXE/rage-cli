@@ -1,8 +1,9 @@
 use anyhow::{Context, Result};
 use std::path::PathBuf;
 
-use rpf_archive::{compose_sheet, encode_image, fit_max_size, image, to_rgba_image,
-                   DrawableKind, ImageFormat, SheetItem, SheetOptions, YtdTexture};
+use rage_formats::{encode_image, fit_max_size, image, to_rgba_image, DrawableKind, ImageFormat,
+                   YtdTexture};
+use rage_render::{compose_sheet, SheetItem, SheetOptions};
 
 use crate::resources::{embedded_textures, extension_of, file_stem, load_drawables, load_texture_dictionary,
                        sanitize};

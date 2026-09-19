@@ -1,4 +1,4 @@
-// `rpf update`: ask GitHub whether a newer release exists, or download and
+// `rage update`: ask GitHub whether a newer release exists, or download and
 // install one in place of the running binary.
 
 use anyhow::{Context, Result};
@@ -62,7 +62,7 @@ fn run_check(json: bool) -> Result<()> {
     } else if available {
         println!("rpf {current} -> {latest} is available");
         println!("{url}");
-        println!("Run `rpf update install` to upgrade.");
+        println!("Run `rage update install` to upgrade.");
     } else {
         println!("rpf {current} is the latest release");
     }
@@ -90,6 +90,6 @@ fn run_install(yes: bool, force: bool) -> Result<()> {
 
     eprintln!("downloading {}", plan.asset);
     update::install(&plan)?;
-    println!("rpf updated to {}", plan.latest);
+    println!("rage updated to {}", plan.latest);
     Ok(())
 }

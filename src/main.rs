@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 mod rpf;
 mod commands;
+mod navmesh;
 mod index;
 mod keys;
 mod paths;
@@ -11,21 +12,21 @@ mod resources;
 mod update;
 mod utils;
 
-use commands::{info, list, extract, verify, tree, textures, screenshot, create, search, resource, index_cmd};
+use commands::{info, list, extract, verify, tree, textures, screenshot, create, search, resource, index_cmd, navmesh as navmesh_cmd};
 use commands::update as update_cmd;
 use rpf::GtaKeys;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
-#[command(name = "rpf")]
-#[command(about = "A CLI tool for working with RAGE Package Files (RPF)", long_about = None)]
+#[command(name = "rage")]
+#[command(about = "A CLI for RAGE game files: RPF archives, RSC7 resources, textures, renders and navmeshes", long_about = None)]
 struct Cli {
     /// Enable verbose output
     #[arg(short, long, global = true)]
     verbose: bool,
 
     /// GTA5.exe (or the folder holding it) to read the keys from; the keys are
-    /// cached per game build under ~/.rpf-cli/keys (RPF_KEYS_CACHE overrides)
+    /// cached per game build under ~/.rage-cli/keys (RAGE_KEYS_CACHE overrides)
     #[arg(long, global = true, value_name = "PATH", env = "GTAV_PATH")]
     exe: Option<PathBuf>,
 
@@ -35,7 +36,7 @@ struct Cli {
     keys: Option<PathBuf>,
 
     /// Skip the daily background check for a newer release
-    /// (also RPF_NO_UPDATE_CHECK)
+    /// (also RAGE_NO_UPDATE_CHECK)
     #[arg(long, global = true)]
     no_update_check: bool,
 
@@ -110,6 +111,9 @@ enum Commands {
 
     /// Inspect loose resource files (.ydr/.ytd/...) or entries inside an archive
     Resource(resource::ResourceArgs),
+
+    /// Inspect, fetch, export and build navmesh cells (.ynv)
+    Navmesh(navmesh_cmd::NavmeshArgs),
 
     /// Check for a newer release, or update this binary in place
     Update(update_cmd::UpdateArgs),
@@ -191,6 +195,7 @@ fn dispatch(command: Commands, keys: Option<&GtaKeys>, exe: Option<&Path>, verbo
         Commands::Textures(args)                             => textures::run(&args, keys),
         Commands::Screenshot(args)                           => screenshot::run(&args, keys, exe),
         Commands::Resource(args)                             => resource::run(&args, keys, verbose),
+        Commands::Navmesh(args)                              => navmesh_cmd::run(&args, keys, exe),
         Commands::Update(args)                               => update_cmd::run(&args),
         Commands::Index(args)                                => index_cmd::run(&args, keys, exe),
         Commands::Create { input, output, version, encryption } => {
