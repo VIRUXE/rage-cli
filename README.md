@@ -305,7 +305,7 @@ rage textures "<GTA V>/x64a.rpf" binoculars.ytd
 form takes the executable itself or the folder holding it. Recovering the keys
 from the executable costs a couple of seconds, so the result is cached per
 game build (keyed on the executable's size and modification time) under
-`~/.rpf-cli/keys`; set `RAGE_KEYS_CACHE` to put it somewhere else. Later runs load in milliseconds,
+`~/.rage-cli/keys` (an existing `~/.rpf-cli` is used as is); set `RAGE_KEYS_CACHE` to put it somewhere else. Later runs load in milliseconds,
 and a game update simply produces a new entry. An unwritable cache is not an
 error, the keys are just recovered every time.
 
@@ -341,7 +341,7 @@ stderr is a terminal, so it never fires in scripts or CI, and it never delays
 a command — it is checked in the background and only reported after your
 command has finished. Disable it with `--no-update-check`, the
 `RAGE_NO_UPDATE_CHECK` environment variable, or by setting `CI`. The check is
-stamped in `~/.rpf-cli/update-check.json`; set `RAGE_UPDATE_CACHE` to put that
+stamped in `~/.rage-cli/update-check.json`; set `RAGE_UPDATE_CACHE` to put that
 file somewhere else. Network requests go through `ureq` and honour the
 standard `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY` environment variables.
 
@@ -352,17 +352,21 @@ the same path. It refuses to install a release published without checksums.
 
 ## Releasing
 
-`rpf-cli` depends on the published [`rpf-archive`](https://github.com/VIRUXE/rpf-archive-rs)
-crate. To build against the sibling checkout without editing `Cargo.toml`:
+`rage-cli` depends on three published crates —
+[`rpf-archive`](https://github.com/VIRUXE/rpf-archive-rs) (archives),
+[`rage-formats`](https://github.com/VIRUXE/rage-formats) (resource parsers) and
+[`rage-render`](https://github.com/VIRUXE/rage-render) (rasteriser) — checked
+out as siblings. To build against the checkouts without editing `Cargo.toml`:
 
 ```sh
-cargo install --path . --config 'patch.crates-io.rpf-archive.path="../rpf-archive-rs"'
+cargo install --path .   --config 'patch.crates-io.rpf-archive.path="../rpf-archive-rs"'   --config 'patch.crates-io.rage-formats.path="../rage-formats"'   --config 'patch.crates-io.rage-render.path="../rage-render"'
 ```
 
 To cut a release:
 
-1. If a library change is needed, publish `rpf-archive` to crates.io first and
-   bump the version this crate pins.
+1. If a library change is needed, publish the crates to crates.io first, in
+   dependency order (`rpf-archive`, `rage-formats`, `rage-render`), and bump
+   the versions this crate pins.
 2. Bump this crate's version in `Cargo.toml` and rebuild so `Cargo.lock` follows.
 3. Commit, then `gh release create vX.Y.Z --notes ...` — the tag triggers the
    `release` workflow, which builds the Linux and Windows binaries, publishes a
