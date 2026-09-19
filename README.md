@@ -400,6 +400,65 @@ rage screenshot ./nested/some_dictionary.ydd --views front,iso        # every en
 rage screenshot ./nested/some_dictionary.ydd --entry 0x<hash> --views front,iso
 ```
 
+### Plot an interior
+
+An MLO is a custom interior: one archetype standing in for a room layout,
+portals, prop placements and its own collision, streamed in over a spot on
+the vanilla map. `plot` draws it from above so you can check a build without
+loading the game.
+
+Point it at a resource folder and it sorts out what it's given:
+
+```sh
+rage plot resources/my_interior -o plan.svg
+```
+
+Loose files work the same way, either by extension or named explicitly when
+the extension doesn't say enough:
+
+```sh
+rage plot interior.ytyp interior.ybn interior_milo_.ymap -o plan.svg
+rage plot --ytyp interior.ytyp --ybn interior.ybn --ymap interior_milo_.ymap -o plan.svg
+```
+
+A vanilla MLO can be named directly, resolved through the game index
+(`--exe`/`GTAV_PATH`, same as everything else that reads the game):
+
+```sh
+rage plot v_bahama -o plan.png
+```
+
+`--layers rooms,portals,entities,collision,drawable,navmesh` picks what gets
+drawn (the default is all of them); dropping `collision,drawable` on a big
+interior is the quickest way to a readable page. A resource that stacks
+several storeys in one MLO draws as an unreadable pile of overlapping rooms
+by default; `plot` warns about it on stderr and names the rooms involved, and
+`--floor-z Z` (one storey, `Z-0.3` to `Z+2.0` m) or `--z-range LO,HI` draws
+just one.
+
+SVG keeps labels and lines crisp at any zoom, with the meshes rasterised into
+one embedded image; PNG, JPG and WebP are for a quick screenshot to paste
+somewhere. The extension on `-o` picks the format.
+
+Only a mesh file named after the MLO's own archetype (an optional `hi@`,
+`ma@` or `lo@` prefix is stripped first) is placed through the interior; any
+other `.ybn`/`.ydr` sitting in the same folder is a vanilla map chunk and is
+drawn as-is, in world space. A file named explicitly with `--ybn`/`--ydr` is
+always taken as the interior's own, whatever its name says. Escrow-encrypted
+files (FiveM's FXAP container) can't be read at all; `plot` skips them with
+one line per folder on stderr and counts them in the page's caption rather
+than failing.
+
+Without a `.ymap` to place it, the plan stays in the interior's own
+coordinates — useful for checking a layout in isolation, but not for lining
+up with a navmesh cell or a marker in world space.
+
+Some `.ytyp`s never record where a room actually sits: every box is stored
+as half-extents around the MLO's own origin, which would stack every room on
+top of the interior's centre if drawn as-is. `plot` notices and estimates
+each room's footprint instead, from the props it owns and the portals that
+open into it, and says so in the caption.
+
 ### Building a navmesh for an interior
 
 The situation: a custom interior (a Gabz-style MLO) placed over a spot where
@@ -430,10 +489,15 @@ rage navmesh build cell.ynv \
     -o "navmesh[108][96].ynv"
 
 # 4. look before you ship
-rage plot "navmesh[108][96].ynv" stream/ytyp/interior_int.ytyp \
-    --ybn stream/ybn/interior.ybn --ymap stream/ymap/interior_milo_.ymap \
-    --floor-z 21.25 --marker=-578.5,-1061.5,Mochi -o check.png
+rage plot stream/ "navmesh[108][96].ynv" \
+    --floor-z 21.25 --marker=-578.5,-1061.5,Mochi -o check.svg
 ```
+
+Read the picture: rooms are coloured and named, portals to the outside are
+dashed, the interior's own navmesh is green, sunk polygons (cut off from the
+world when the interior swallowed them) are dashed red, and a grid, scale bar
+and legend with per-layer counts sit around the plan so `21.25` and the
+marker line up with what actually got built.
 
 What `build` does, in order:
 
@@ -543,10 +607,11 @@ rage index clear
 The index is per game build and lives under `~/.rage-cli/index`. Besides the
 texture dictionaries it also records every interior (which `.ytyp` declares
 it), the `.ymap`s that place each one and the names of every `.ybn`, which is
-what lets `rage plot v_int_3` draw a vanilla interior from its name alone.
-Rebuild it after a game update; a cache written by an older `rage` is no
-longer readable (`index info` says so) and is rebuilt automatically the next
-time `plot` or `screenshot` needs it.
+what lets `rage plot v_bahama` draw a vanilla interior from its name alone.
+Indexing every `.ymap` for that makes `index build` run about 7% slower than
+before interiors were tracked. Rebuild it after a game update; a cache
+written by an older `rage` is no longer readable (`index info` says so) and
+is rebuilt automatically the next time `plot` or `screenshot` needs it.
 
 ### Updating
 
@@ -572,6 +637,8 @@ src/
   main.rs            clap definition and dispatch; one line per command
   commands/          one file per command; parse arguments, call the libraries, print
     navmesh.rs       the navmesh subcommands (cell lookup, OBJ/PNG output, build wiring)
+    plot.rs          `plot`: placement, MLO-vs-world-space meshes, room-box estimation, the caption
+  plot_inputs.rs     turning plot's free-form inputs (files, a resource folder, a vanilla name) into parsed sources
   navmesh/mod.rs     the generator: grid, blocking, rectangles, edge linking, sinking
   index.rs           the game-wide index: build (archives in load order), cache format, lookups
   resources.rs       loading a resource by name from an archive or from disk
