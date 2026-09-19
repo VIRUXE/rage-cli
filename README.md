@@ -540,9 +540,13 @@ rage index info
 rage index clear
 ```
 
-The index is per game build and lives under `~/.rage-cli/index`. Rebuild it
-after a game update, and after upgrading `rage` when the cache format
-changed (`index info` says so).
+The index is per game build and lives under `~/.rage-cli/index`. Besides the
+texture dictionaries it also records every interior (which `.ytyp` declares
+it), the `.ymap`s that place each one and the names of every `.ybn`, which is
+what lets `rage plot v_int_3` draw a vanilla interior from its name alone.
+Rebuild it after a game update; a cache written by an older `rage` is no
+longer readable (`index info` says so) and is rebuilt automatically the next
+time `plot` or `screenshot` needs it.
 
 ### Updating
 

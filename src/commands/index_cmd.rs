@@ -33,7 +33,7 @@ pub fn run(args: &IndexArgs, keys: Option<&GtaKeys>, exe: Option<&std::path::Pat
 
     match &args.command {
         IndexCommand::Build => {
-            println!("Building texture index for {}...", game_root.display());
+            println!("Building game index for {}...", game_root.display());
             let index = GameIndex::build(&game_root, keys)?;
             println!("{}", index.summary());
 
