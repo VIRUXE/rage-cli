@@ -6,13 +6,13 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
-use rage_formats::{encode_image, ImageFormat, MloDef, MloInstance, Vec3, YmapEntity};
+use rage_formats::{encode_image, rage_joaat, ImageFormat, MloDef, MloInstance, MloRoom, Vec3, YmapEntity};
 use rage_render::{
     plan_png, plan_svg, quad_footprint, rooms_stacked, EntityMark, Layer, Marker, NavClass, NavShape, PlanOptions,
     PlanReport, PortalShape, RoomShape, Scene, Tri, FLOOR_BAND,
 };
 
-use crate::plot_inputs::{self, Explicit, PlotSources};
+use crate::plot_inputs::{self, Explicit, PlotSources, SkipReason};
 use crate::rpf::GtaKeys;
 use crate::utils::{parse_marker, parse_pair, parse_quad};
 
@@ -65,12 +65,15 @@ pub struct PlotArgs {
     pub ytyp: Vec<PathBuf>,
 
     /// A .ybn to draw the collision from: the floors and walls the game
-    /// actually stops you at
+    /// actually stops you at. Named here it counts as the interior's own and
+    /// is placed by the .ymap, whatever it is called; inside a scanned folder
+    /// only a file named after the archetype is placed, the rest being
+    /// vanilla map chunks that are already in world coordinates
     #[arg(long, value_name = "FILE")]
     pub ybn: Vec<PathBuf>,
 
-    /// A .ydr/.ydd to draw the visible shell from (in the interior's own
-    /// coordinates, as the MLO stores it)
+    /// A .ydr/.ydd to draw the visible shell from; named here it is taken as
+    /// the interior's own and placed by the .ymap, as with --ybn
     #[arg(long, value_name = "FILE")]
     pub ydr: Vec<PathBuf>,
 
@@ -115,7 +118,35 @@ pub struct PlotArgs {
     pub output: PathBuf,
 }
 
+/// What the output extension asks for.
+enum Output {
+    Svg,
+    Image(ImageFormat),
+}
+
+fn output_format(path: &Path) -> Result<Output> {
+    match path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase().as_str() {
+        "svg" => Ok(Output::Svg),
+        ext @ ("png" | "jpg" | "jpeg" | "webp") => Ok(Output::Image(ext.parse()?)),
+        other => bail!("unsupported output extension '.{other}'; use .png, .jpg, .webp or .svg"),
+    }
+}
+
 pub fn run(args: &PlotArgs, keys: Option<&GtaKeys>, exe: Option<&Path>) -> Result<()> {
+    // Everything the command line says is settled before a byte is read: a
+    // typo in --region should not cost a walk over a whole resource folder.
+    let region = args.region.as_deref().map(parse_quad).transpose().context("--region")?;
+    let z_band = z_band(args)?;
+    let markers: Vec<Marker> = args
+        .marker
+        .iter()
+        .map(|m| {
+            let (x, y, label) = parse_marker(m).context("--marker expects x,y,label")?;
+            Ok(Marker { x, y, label })
+        })
+        .collect::<Result<_>>()?;
+    let output = output_format(&args.output)?;
+
     let explicit = Explicit {
         ymap: args.ymap.clone(),
         ytyp: args.ytyp.clone(),
@@ -125,22 +156,26 @@ pub fn run(args: &PlotArgs, keys: Option<&GtaKeys>, exe: Option<&Path>) -> Resul
     let sources = plot_inputs::resolve(&args.inputs, &explicit, keys, exe)?;
 
     let placement = find_placement(&sources);
-    let z_band = z_band(args)?;
-    let scene = build_scene(args, &sources, &placement, z_band)?;
+    let scene = build_scene(args, &sources, &placement, z_band, region, markers)?;
 
     if z_band.is_none() {
-        for (a, b) in rooms_stacked(&scene.rooms) {
+        let stacked = rooms_stacked(&scene.rooms);
+        if let Some(&(a, b)) = stacked.first() {
             let (upper, lower) = if scene.rooms[a].z_lo >= scene.rooms[b].z_lo { (a, b) } else { (b, a) };
             let (u, l) = (&scene.rooms[upper], &scene.rooms[lower]);
+            let more = match stacked.len() {
+                1 => String::new(),
+                n => format!(" and {} more", n - 1),
+            };
             eprintln!(
-                "warning: rooms stack vertically (r{} '{}' {:.1}..{:.1} over r{} '{}' {:.1}..{:.1}); use --floor-z Z or --z-range LO,HI to draw one storey",
+                "warning: rooms stack vertically (r{} '{}' {:.1}..{:.1} over r{} '{}' {:.1}..{:.1}{more}); use --floor-z Z or --z-range LO,HI to draw one storey",
                 u.index, u.name, u.z_lo, u.z_hi, l.index, l.name, l.z_lo, l.z_hi
             );
         }
     }
 
     let opts = PlanOptions {
-        region: args.region.as_deref().map(parse_quad).transpose().context("--region")?,
+        region,
         scale: args.scale,
         z_band,
         layers: args.layers.iter().map(|l| Layer::from(*l)).collect(),
@@ -148,21 +183,18 @@ pub fn run(args: &PlotArgs, keys: Option<&GtaKeys>, exe: Option<&Path>) -> Resul
         ..Default::default()
     };
 
-    let ext = args.output.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
-    let report = match ext.as_str() {
-        "svg" => {
+    let report = match output {
+        Output::Svg => {
             let (svg, report) = plan_svg(&scene, &opts)?;
             std::fs::write(&args.output, svg).with_context(|| format!("writing {}", args.output.display()))?;
             report
         }
-        "png" | "jpg" | "jpeg" | "webp" => {
+        Output::Image(format) => {
             let (img, report) = plan_png(&scene, &opts)?;
-            let format: ImageFormat = ext.parse()?;
             let bytes = encode_image(&img, format, args.quality)?;
             std::fs::write(&args.output, bytes).with_context(|| format!("writing {}", args.output.display()))?;
             report
         }
-        other => bail!("unsupported output extension '.{other}'; use .png, .jpg, .webp or .svg"),
     };
 
     for warning in &report.warnings {
@@ -258,6 +290,76 @@ fn find_placement(sources: &PlotSources) -> Placement {
     Placement { entity: None, source: None, instance: None, mlo }
 }
 
+/// Whether a mesh file is the interior's own — and so has to go through the
+/// placement — or a world-space map chunk shipped in the same folder, which
+/// is already where it belongs. Reports every world-space file it decides on,
+/// but only when a placement is in play: with nothing to transform, the
+/// distinction makes no difference to the page.
+fn is_interior_mesh(file_name: &str, sources: &PlotSources, placement: &Placement, what: &str) -> bool {
+    if sources.explicit_meshes.contains(file_name) {
+        return true;
+    }
+    let interior = placement.mlo.as_ref().is_some_and(|mlo| mesh_belongs_to(file_name, mlo.name_hash));
+    if !interior && placement.entity.is_some() {
+        eprintln!("{file_name}: not the interior's own {what}; drawn in world space");
+    }
+    interior
+}
+
+/// True when `file_name` names the archetype `mlo_name_hash`. A resource may
+/// ship the same mesh at several detail levels (`hi@name.ybn`), so the LOD
+/// prefix is stripped before the name is hashed.
+fn mesh_belongs_to(file_name: &str, mlo_name_hash: u32) -> bool {
+    let stem = file_name.rsplit_once('.').map_or(file_name, |(s, _)| s).to_lowercase();
+    let stem = ["hi@", "ma@", "lo@"].iter().find_map(|p| stem.strip_prefix(p)).unwrap_or(stem.as_str());
+    rage_joaat(stem) == mlo_name_hash
+}
+
+/// True when every room but limbo stores its box as half-extents about the
+/// MLO origin rather than where the room is, which means the .ytyp never
+/// recorded the positions and drawing the boxes would stack every room
+/// concentrically at the interior's centre.
+///
+/// Most such rooms are exactly symmetric (`min == -max`); a few are a little
+/// off, so a room counts as centred when its centre is well inside its own
+/// half-extent. Requiring it of every room keeps a real layout — whose rooms
+/// are metres apart — from ever matching.
+fn rooms_unpositioned(rooms: &[MloRoom]) -> bool {
+    let live: Vec<&MloRoom> = rooms.iter().skip(1).collect();
+    live.len() >= 2 && live.iter().all(|r| centred_on_origin(r.bb_min.x, r.bb_max.x) && centred_on_origin(r.bb_min.y, r.bb_max.y))
+}
+
+fn centred_on_origin(lo: f32, hi: f32) -> bool {
+    let centre = (lo + hi) / 2.0;
+    let half = (hi - lo) / 2.0;
+    centre.abs() <= 0.025f32.max(half / 2.0)
+}
+
+/// Where a room really is, taken from what is attached to it: the props it
+/// owns and the corners of the portals opening into it. `None` when fewer
+/// than three points vouch for it, which is too little to call a footprint.
+fn estimate_room_box(mlo: &MloDef, room: usize) -> Option<(Vec3, Vec3)> {
+    let mut points: Vec<Vec3> = mlo.rooms[room]
+        .attached_objects
+        .iter()
+        .filter_map(|i| mlo.entities.get(*i as usize))
+        .map(|e| e.position)
+        .collect();
+    for portal in &mlo.portals {
+        if portal.room_from as usize == room || portal.room_to as usize == room {
+            points.extend(portal.corners.iter().copied());
+        }
+    }
+    if points.len() < 3 {
+        return None;
+    }
+    let fold = |pick: fn(f32, f32) -> f32, get: fn(&Vec3) -> f32| points.iter().map(get).fold(f32::NAN, pick);
+    Some((
+        Vec3::new(fold(f32::min, |v| v.x), fold(f32::min, |v| v.y), fold(f32::min, |v| v.z)),
+        Vec3::new(fold(f32::max, |v| v.x), fold(f32::max, |v| v.y), fold(f32::max, |v| v.z)),
+    ))
+}
+
 /// The height band to draw, from `--floor-z` or `--z-range`.
 fn z_band(args: &PlotArgs) -> Result<Option<(f32, f32)>> {
     if let Some(z) = args.floor_z {
@@ -274,24 +376,34 @@ fn z_band(args: &PlotArgs) -> Result<Option<(f32, f32)>> {
 
 fn build_scene(
     args: &PlotArgs, sources: &PlotSources, placement: &Placement, z_band: Option<(f32, f32)>,
+    region: Option<[f32; 4]>, markers: Vec<Marker>,
 ) -> Result<Scene> {
     let mut scene = Scene::default();
     let name_of = |hash: u32| sources.names.get(&hash).cloned().unwrap_or_else(|| format!("{hash:#010x}"));
+    let mut estimated_rooms = false;
 
     if let Some(mlo) = &placement.mlo {
         // Rooms and portals are stored axis-aligned in the interior's own
         // space; MLO instances are placed with a yaw-only rotation in
         // practice, so a transformed box stays a box on the page.
+        estimated_rooms = rooms_unpositioned(&mlo.rooms);
         for (i, room) in mlo.rooms.iter().enumerate() {
-            let footprint = quad_footprint(room.bb_min, room.bb_max, |v| placement.to_world(v));
-            let (mut z_lo, mut z_hi) = (f32::MAX, f32::MIN);
-            for z in [room.bb_min.z, room.bb_max.z] {
-                for (x, y) in [(room.bb_min.x, room.bb_min.y), (room.bb_max.x, room.bb_max.y)] {
-                    let w = placement.to_world(Vec3::new(x, y, z));
-                    z_lo = z_lo.min(w.z);
-                    z_hi = z_hi.max(w.z);
-                }
-            }
+            // Room 0 is limbo, the world outside: it has no props of its own
+            // to estimate from, and its box is meant to swallow the interior.
+            let box_ = match estimated_rooms && i != 0 {
+                true => match estimate_room_box(mlo, i) {
+                    Some(b) => b,
+                    None => continue,
+                },
+                false => (room.bb_min, room.bb_max),
+            };
+            let (bb_min, bb_max) = box_;
+            let footprint = quad_footprint(bb_min, bb_max, |v| placement.to_world(v));
+            // A yaw-only placement turns about z, so a point's world z
+            // depends on its own z alone: the box's two z extremes bound it.
+            let z_a = placement.to_world(Vec3::new(bb_min.x, bb_min.y, bb_min.z)).z;
+            let z_b = placement.to_world(Vec3::new(bb_min.x, bb_min.y, bb_max.z)).z;
+            let (z_lo, z_hi) = (z_a.min(z_b), z_a.max(z_b));
             scene.rooms.push(RoomShape { index: i, name: room.name.clone(), footprint, z_lo, z_hi });
         }
         for (i, portal) in mlo.portals.iter().enumerate() {
@@ -328,15 +440,21 @@ fn build_scene(
         }
     }
 
-    for (_, ybn) in &sources.ybns {
+    let mut placed_meshes = 0usize;
+    for (name, ybn) in &sources.ybns {
+        let placed = is_interior_mesh(name, sources, placement, "collision");
+        placed_meshes += usize::from(placed);
         for tri in ybn.triangles() {
-            scene.collision.push(Tri { v: tri.vertices.map(|v| placement.to_world(v)) });
+            scene.collision.push(Tri { v: tri.vertices.map(|v| if placed { placement.to_world(v) } else { v }) });
         }
     }
 
-    // A drawable given as a file is the interior's own shell, stored in the
+    // A drawable that belongs to the interior is its shell, stored in the
     // same local space as the rooms; props are not placed per entity yet.
-    for (_, drawables) in &sources.drawables {
+    for (name, drawables) in &sources.drawables {
+        let placed = is_interior_mesh(name, sources, placement, "shell");
+        placed_meshes += usize::from(placed);
+        let put = |v: Vec3| if placed { placement.to_world(v) } else { v };
         for drawable in drawables {
             let Some(lod) = drawable.best_lod() else { continue };
             for model in &lod.models {
@@ -346,7 +464,7 @@ fn build_scene(
                     };
                     let Ok(unified) = vertices.to_unified_vertices() else { continue };
                     for face in indices.indices.chunks_exact(3) {
-                        let corner = |i: u32| unified.get(i as usize).map(|v| placement.to_world(v.position));
+                        let corner = |i: u32| unified.get(i as usize).map(|v| put(v.position));
                         if let (Some(a), Some(b), Some(c)) = (corner(face[0]), corner(face[1]), corner(face[2])) {
                             scene.drawable.push(Tri { v: [a, b, c] });
                         }
@@ -371,15 +489,13 @@ fn build_scene(
         }
     }
 
-    for marker in &args.marker {
-        let (x, y, label) = parse_marker(marker).context("--marker expects x,y,label")?;
-        scene.markers.push(Marker { x, y, label });
-    }
+    scene.markers = markers;
 
-    if !sources.ynvs.is_empty()
-        && placement.entity.is_none()
-        && !(scene.rooms.is_empty() && scene.collision.is_empty())
-    {
+    // Only geometry stored in the interior's own space needs a .ymap to say
+    // where it is; a navmesh cell on its own is already in world coordinates.
+    let needs_placing =
+        !scene.rooms.is_empty() || !scene.portals.is_empty() || !scene.entities.is_empty() || placed_meshes > 0;
+    if !sources.ynvs.is_empty() && placement.entity.is_none() && needs_placing {
         eprintln!("warning: navmesh polygons are in world coordinates but the rest of the plan is in the interior's own; pass the .ymap that places it");
     }
 
@@ -389,21 +505,130 @@ fn build_scene(
     };
     scene.title = match &args.title {
         Some(title) => title.clone(),
-        None => match &args.region {
-            Some(region) => format!("{} — {region} — {band}", sources.label),
+        None => match region {
+            Some([x0, y0, x1, y1]) => {
+                format!("{} — {x0:.1},{y0:.1}..{x1:.1},{y1:.1} — {band}", sources.label)
+            }
             None => format!("{} — {band}", sources.label),
         },
     };
-    scene.caption.push(match &placement.source {
-        Some(ymap) => format!("placement: {ymap}"),
-        None => "MLO-local coordinates (no ymap given)".to_string(),
-    });
+    match &placement.source {
+        Some(ymap) => scene.caption.push(format!("placement: {ymap}")),
+        None if needs_placing => scene.caption.push("MLO-local coordinates (no ymap given)".to_string()),
+        None => {}
+    }
     scene.caption.push(band);
-    if !sources.skipped.is_empty() {
-        scene.caption.push(format!("escrow-encrypted, not drawn: {}", sources.skipped.join(", ")));
+    if estimated_rooms {
+        scene.caption.push("room boxes estimated from props and portals (ytyp boxes are unpositioned)".to_string());
+    }
+    let escrow = sources.skipped.iter().filter(|s| s.reason == SkipReason::Escrow).count();
+    let unreadable = sources.skipped.len() - escrow;
+    if escrow + unreadable > 0 {
+        let mut parts = Vec::new();
+        if escrow > 0 {
+            parts.push(format!("{escrow} escrow-encrypted {}", if escrow == 1 { "file" } else { "files" }));
+        }
+        if unreadable > 0 {
+            parts.push(format!("{unreadable} unreadable"));
+        }
+        scene.caption.push(format!("not drawn: {}", parts.join(", ")));
     }
     for note in &sources.notes {
         scene.caption.push(note.clone());
     }
     Ok(scene)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rage_formats::{MloPortal, MloRoom};
+
+    fn room(name: &str, bb_min: Vec3, bb_max: Vec3, attached: &[u32]) -> MloRoom {
+        MloRoom {
+            name: name.to_string(),
+            bb_min,
+            bb_max,
+            flags: 0,
+            floor_id: 0,
+            attached_objects: attached.to_vec(),
+        }
+    }
+
+    fn entity(position: Vec3) -> YmapEntity {
+        YmapEntity {
+            archetype_hash: 0,
+            flags: 0,
+            guid: 0,
+            position,
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            scale_xy: 1.0,
+            scale_z: 1.0,
+            parent_index: -1,
+            lod_dist: 0.0,
+            is_mlo_instance: false,
+        }
+    }
+
+    fn portal(room_from: u32, room_to: u32, corners: Vec<Vec3>) -> MloPortal {
+        MloPortal {
+            room_from,
+            room_to,
+            flags: 0,
+            mirror_priority: 0,
+            opacity: 0,
+            audio_occlusion: 0,
+            corners,
+            attached_objects: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_mesh_named_after_the_archetype_is_the_interiors_own() {
+        let hash = rage_joaat("denis3d_catcafe");
+        assert!(mesh_belongs_to("denis3d_catcafe.ybn", hash));
+        assert!(mesh_belongs_to("hi@denis3d_catcafe.ybn", hash), "a LOD prefix is still the same mesh");
+        assert!(mesh_belongs_to("MA@Denis3d_CatCafe.ydr", hash), "the name is hashed lowercase");
+        assert!(!mesh_belongs_to("kt1_15_0.ybn", hash), "a vanilla map chunk is world-space");
+        assert!(!mesh_belongs_to("hei_kt1_rd_4.ybn", hash));
+    }
+
+    #[test]
+    fn rooms_are_unpositioned_when_every_box_is_centred_on_the_origin() {
+        let limbo = room("limbo", Vec3::new(-100.0, -100.0, -50.0), Vec3::new(100.0, 100.0, 50.0), &[]);
+        let half = |x: f32, y: f32| room("r", Vec3::new(-x, -y, 0.0), Vec3::new(x, y, 3.0), &[]);
+        assert!(rooms_unpositioned(&[limbo.clone(), half(4.0, 3.0), half(9.0, 2.0)]));
+
+        // As the cat cafe stores them: mostly exact half-extents, a few rooms
+        // a little off centre but nowhere near their real position.
+        let nearly = room("r10", Vec3::new(-2.60, -6.25, -2.21), Vec3::new(3.62, 6.68, 1.84), &[]);
+        assert!(rooms_unpositioned(&[limbo.clone(), half(7.48, 7.45), nearly]));
+
+        let placed = room("kitchen", Vec3::new(2.0, 1.0, 0.0), Vec3::new(6.0, 4.0, 3.0), &[]);
+        assert!(!rooms_unpositioned(&[limbo.clone(), half(4.0, 3.0), placed]));
+        assert!(!rooms_unpositioned(&[limbo, half(4.0, 3.0)]), "one room is not a pattern");
+        assert!(!rooms_unpositioned(&[]));
+    }
+
+    #[test]
+    fn a_rooms_box_is_estimated_from_its_props_and_portals() {
+        let mlo = MloDef {
+            name_hash: 0,
+            entities: vec![entity(Vec3::new(1.0, 1.0, 0.0)), entity(Vec3::new(3.0, 2.0, 1.0))],
+            rooms: vec![
+                room("limbo", Vec3::new(-9.0, -9.0, -9.0), Vec3::new(9.0, 9.0, 9.0), &[]),
+                room("kitchen", Vec3::new(-4.0, -3.0, 0.0), Vec3::new(4.0, 3.0, 2.5), &[0, 1]),
+                room("empty", Vec3::new(-4.0, -3.0, 0.0), Vec3::new(4.0, 3.0, 2.5), &[]),
+            ],
+            portals: vec![portal(1, 2, vec![Vec3::new(5.0, 0.0, 0.0), Vec3::new(5.0, 4.0, 2.5)])],
+            entity_sets: Vec::new(),
+        };
+
+        let (min, max) = estimate_room_box(&mlo, 1).expect("two props and a portal are enough");
+        assert_eq!((min.x, min.y, min.z), (1.0, 0.0, 0.0));
+        assert_eq!((max.x, max.y, max.z), (5.0, 4.0, 2.5));
+
+        // Room 2 is vouched for by the portal's two corners alone.
+        assert!(estimate_room_box(&mlo, 2).is_none(), "two points are not a footprint");
+    }
 }

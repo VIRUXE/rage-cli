@@ -98,7 +98,9 @@ fn folder_input_skips_escrowed_files() {
     std::fs::create_dir_all(&stream).unwrap();
     let mut escrowed = b"FXAP".to_vec();
     escrowed.extend(std::iter::repeat(0u8).take(60));
-    write(&stream, "prop.ydr", &escrowed);
+    for name in ["prop_a.ydr", "prop_b.ydr", "prop_c.ydd"] {
+        write(&stream, name, &escrowed);
+    }
     write(&stream, "cell.ynv", &serialize_ynv(&cell()).unwrap());
 
     let png = dir.path().join("out.png");
@@ -107,6 +109,9 @@ fn folder_input_skips_escrowed_files() {
     assert!(out.status.success(), "stderr:\n{}", String::from_utf8_lossy(&out.stderr));
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("escrow"), "{err}");
+    // One line for the folder, not one per file.
+    assert_eq!(err.matches("escrow").count(), 1, "{err}");
+    assert!(err.contains("skipping 3 escrow-encrypted files"), "{err}");
 }
 
 #[test]
