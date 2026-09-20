@@ -334,17 +334,15 @@ const SAME_PLACEMENT_METRES: f32 = 0.5;
 ///
 /// Instances further apart than `SAME_PLACEMENT_METRES` are separate
 /// placements of a repeated interior — a garage, an apartment — and all of
-/// them are kept. Returns how many survived.
+/// them are kept. The maps' plain entity lists (the placement fallback) are
+/// collapsed by the same rule, per archetype, so a superseded copy leaves
+/// nothing behind. Returns how many instances survived.
 fn dedupe_placements(ymaps: &mut [(String, Vec<YmapEntity>, Vec<MloInstance>)]) -> usize {
-    let all: Vec<Vec3> =
-        ymaps.iter().flat_map(|(_, _, instances)| instances.iter().map(|i| i.entity.position)).collect();
-    let same = |a: Vec3, b: Vec3| {
-        (a.x - b.x).abs() <= SAME_PLACEMENT_METRES
-            && (a.y - b.y).abs() <= SAME_PLACEMENT_METRES
-            && (a.z - b.z).abs() <= SAME_PLACEMENT_METRES
-    };
-    let keep: Vec<bool> = (0..all.len()).map(|i| !all[i + 1..].iter().any(|&later| same(all[i], later))).collect();
-
+    let instances: Vec<(u32, Vec3)> = ymaps
+        .iter()
+        .flat_map(|(_, _, instances)| instances.iter().map(|i| (i.entity.archetype_hash, i.entity.position)))
+        .collect();
+    let keep = keep_last_in_place(&instances);
     let mut next = 0;
     for (_, _, instances) in ymaps.iter_mut() {
         instances.retain(|_| {
@@ -352,7 +350,29 @@ fn dedupe_placements(ymaps: &mut [(String, Vec<YmapEntity>, Vec<MloInstance>)]) 
             keep[next - 1]
         });
     }
-    keep.iter().filter(|kept| **kept).count()
+    let survivors = keep.iter().filter(|kept| **kept).count();
+
+    let entities: Vec<(u32, Vec3)> =
+        ymaps.iter().flat_map(|(_, entities, _)| entities.iter().map(|e| (e.archetype_hash, e.position))).collect();
+    let keep = keep_last_in_place(&entities);
+    let mut next = 0;
+    for (_, entities, _) in ymaps.iter_mut() {
+        entities.retain(|_| {
+            next += 1;
+            keep[next - 1]
+        });
+    }
+    survivors
+}
+
+/// For each entry, whether no later entry of the same archetype stands
+/// within `SAME_PLACEMENT_METRES` of it — the last copy in rank order wins.
+fn keep_last_in_place(entries: &[(u32, Vec3)]) -> Vec<bool> {
+    let same = |(ha, a): (u32, Vec3), (hb, b): (u32, Vec3)| {
+        let (dx, dy, dz) = (a.x - b.x, a.y - b.y, a.z - b.z);
+        ha == hb && dx * dx + dy * dy + dz * dz <= SAME_PLACEMENT_METRES * SAME_PLACEMENT_METRES
+    };
+    (0..entries.len()).map(|i| !entries[i + 1..].iter().any(|&later| same(entries[i], later))).collect()
 }
 
 /// A vanilla interior named on the command line, e.g. `v_bahama` or
@@ -495,6 +515,37 @@ mod tests {
         ];
         assert_eq!(dedupe_placements(&mut ymaps), 3);
         assert_eq!(positions(&ymaps).len(), 3);
+    }
+
+    /// "The same spot" is a distance, not a box: two placements 0.4 m apart
+    /// on both axes are 0.57 m apart and stay separate.
+    #[test]
+    fn the_same_spot_is_measured_as_a_distance() {
+        let mut ymaps = vec![
+            ymap("a.ymap", vec![instance(0.0, 0.0, 0.0)]),
+            ymap("b.ymap", vec![instance(0.4, 0.4, 0.0)]),
+        ];
+        assert_eq!(dedupe_placements(&mut ymaps), 2);
+        assert_eq!(positions(&ymaps).len(), 2);
+    }
+
+    /// A superseded map's entity list is dropped along with its instance,
+    /// so the interior's own entity does not linger twice in the fallback
+    /// list; an entity the later map does not repeat is kept.
+    #[test]
+    fn entities_from_a_superseded_map_are_collapsed_too() {
+        let base = instance(100.0, 200.0, 30.0);
+        let dlc = instance(100.2, 200.1, 30.0);
+        let mut lone = instance(700.0, 700.0, 0.0).entity;
+        lone.archetype_hash = 0x5eed;
+        let mut ymaps = vec![
+            ("base.ymap".to_string(), vec![base.entity, lone], vec![base]),
+            ("dlc.ymap".to_string(), vec![dlc.entity], vec![dlc]),
+        ];
+        assert_eq!(dedupe_placements(&mut ymaps), 1);
+        assert_eq!(ymaps[0].1.len(), 1, "only the entity the DLC map repeats goes");
+        assert_eq!(ymaps[0].1[0].archetype_hash, 0x5eed);
+        assert_eq!(ymaps[1].1.len(), 1);
     }
 
     /// Two maps that merely share a file name can place the interior in two
