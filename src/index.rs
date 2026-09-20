@@ -570,7 +570,8 @@ const MAGIC: u32 = 0x5850_4652; // "RPFX" little-endian
 // index.bin just reflects the wrong scan order and must be rebuilt.
 // 4: archetype bounding boxes added (`archetype_box`).
 // 5: MLO ytyp/ymap locations and ybn names for `rage plot`.
-const FORMAT_VERSION: u32 = 5;
+// 6: every placement ymap is kept; plot dedupes by position.
+const FORMAT_VERSION: u32 = 6;
 
 fn write_u32(buf: &mut Vec<u8>, v: u32) {
     buf.extend_from_slice(&v.to_le_bytes());
@@ -829,8 +830,6 @@ mod tests {
         }
     }
 
-    /// A DLC that ships its own copy of a base-game `.ymap` must *replace*
-    /// the base entry, not sit beside it: `plot` draws the first placement,
     /// A same-named map in a later archive is usually a DLC copy of the base
     /// one, but it can equally be an unrelated map that happens to share the
     /// name — so both are kept, in rank order, and `plot` decides which
@@ -893,10 +892,31 @@ mod tests {
 
     #[test]
     fn rejects_old_format_version() {
-        let mut bytes = Vec::new();
-        write_u32(&mut bytes, MAGIC);
-        write_u32(&mut bytes, 1); // the pre-parent-chain format
-        assert!(decode(&bytes).is_err());
+        for stale in [1, FORMAT_VERSION - 1] {
+            let mut bytes = Vec::new();
+            write_u32(&mut bytes, MAGIC);
+            write_u32(&mut bytes, stale);
+            assert!(decode(&bytes).is_err(), "version {stale} should be rejected, not decoded");
+        }
+    }
+
+    /// A whole, well-formed cache written by 0.17.1 is still refused: its
+    /// layout is identical, but its `mlo_instances` dropped every placement
+    /// whose .ymap shared a name with one already listed, so reading it back
+    /// would serve the bug this version fixes. `load_or_build` answers a
+    /// refusal by rebuilding, which is exactly what should happen.
+    #[test]
+    fn a_cache_written_by_the_previous_format_is_rejected() {
+        let mut index = GameIndex::default();
+        index.mlo_ytyp.insert(10, loc("v_int_3.ytyp"));
+        index.mlo_instances.insert(10, vec![loc("a.ymap"), loc("b.ymap")]);
+
+        let bytes = encode(&index);
+        decode(&bytes).expect("this version's own cache should decode");
+
+        let mut stale = bytes.clone();
+        stale[4..8].copy_from_slice(&5u32.to_le_bytes());
+        assert!(decode(&stale).is_err(), "a version 5 cache should be rebuilt, not read");
     }
 
     #[test]

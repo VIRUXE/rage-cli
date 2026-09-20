@@ -285,7 +285,7 @@ fn add_folder(dir: &Path, seen: &mut HashSet<PathBuf>, src: &mut PlotSources) ->
     let skip_drawables = too_many_drawables(drawables);
     if skip_drawables {
         eprintln!(
-            "{drawables} drawables in folder ({MAX_FOLDER_DRAWABLES} or more are left out);              pass the ones to draw with --ydr"
+            "{drawables} drawables in folder ({MAX_FOLDER_DRAWABLES} or more are left out); pass the ones to draw with --ydr"
         );
     }
     let before = src.skipped.len();

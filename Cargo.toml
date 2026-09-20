@@ -1,6 +1,6 @@
 [package]
 name = "rage-cli"
-version = "0.17.1"
+version = "0.17.2"
 edition = "2024"
 authors = ["VIRUXE"]
 description = "Swiss-army CLI for RAGE game files: RPF archives, RSC7 resources, textures, renders and navmeshes"
