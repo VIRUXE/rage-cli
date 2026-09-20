@@ -15,10 +15,17 @@ use crate::index::GameIndex;
 use crate::rpf::GtaKeys;
 use crate::utils::walkdir;
 
-/// A folder holding more drawables than this is a whole resource's art: the
-/// caller is asked to name the ones worth drawing instead of waiting for all
-/// of them to be parsed.
+/// A folder is drawn whole only while it holds fewer drawables than this;
+/// at this many it is a whole resource's art, and the caller is asked to name
+/// the ones worth drawing instead of waiting for all of them to be parsed.
 const MAX_FOLDER_DRAWABLES: usize = 200;
+
+/// Whether a folder's drawable count is past the limit. The rule is "fewer
+/// than `MAX_FOLDER_DRAWABLES` are drawn", so the limit itself is already too
+/// many.
+fn too_many_drawables(drawables: usize) -> bool {
+    drawables >= MAX_FOLDER_DRAWABLES
+}
 
 /// Files named with a `--ymap`/`--ytyp`/`--ybn`/`--ydr` flag. The extension
 /// still decides what a file is; what the flag adds is the caller's word
@@ -275,9 +282,11 @@ fn add_folder(dir: &Path, seen: &mut HashSet<PathBuf>, src: &mut PlotSources) ->
         matches!(p.extension().and_then(|e| e.to_str()).map(|e| e.to_lowercase()).as_deref(), Some("ydr") | Some("ydd"))
     };
     let drawables = files.iter().filter(|p| is_drawable(p)).count();
-    let skip_drawables = drawables > MAX_FOLDER_DRAWABLES;
+    let skip_drawables = too_many_drawables(drawables);
     if skip_drawables {
-        eprintln!("{drawables} drawables in folder; pass the ones to draw with --ydr");
+        eprintln!(
+            "{drawables} drawables in folder ({MAX_FOLDER_DRAWABLES} or more are left out);              pass the ones to draw with --ydr"
+        );
     }
     let before = src.skipped.len();
     for path in &files {
@@ -388,4 +397,18 @@ fn add_archetype(name_or_hash: &str, keys: Option<&GtaKeys>, exe: Option<&Path>,
 
     src.names.insert(hash, name_or_hash.to_lowercase());
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{too_many_drawables, MAX_FOLDER_DRAWABLES};
+
+    /// The documented rule is "fewer than 200 drawables are drawn", so 200
+    /// itself is already too many.
+    #[test]
+    fn the_drawable_limit_is_exclusive() {
+        assert!(!too_many_drawables(MAX_FOLDER_DRAWABLES - 1));
+        assert!(too_many_drawables(MAX_FOLDER_DRAWABLES));
+        assert!(too_many_drawables(MAX_FOLDER_DRAWABLES + 1));
+    }
 }
