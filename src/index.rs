@@ -518,28 +518,17 @@ fn index_archive(archive: &Archive, archive_path: &Path, nested_rpfs: &[String],
     }
 }
 
-/// Files one `.ymap`'s placement of an interior, last-wins per map file —
-/// the same DLC-overrides-base rule `ytd_by_name` and `archetype_txd`
-/// follow, which for a *list* means replacing the matching entry in place
-/// rather than appending beside it. A DLC that ships its own copy of a
-/// base-game map would otherwise leave two entries, and `plot` (which draws
-/// the first) would draw the superseded one.
+/// Files one `.ymap`'s placement of an interior. Every location is kept, in
+/// the scan order the archives were ranked into (base -> update -> DLC), so
+/// the last entry for a given placement is the copy the game loads.
 ///
-/// Two locations are the same map when their file names match, ignoring
-/// case: a DLC override keeps the map's name but rarely its full path
-/// (`x64/levels/...` in the pack instead of `levels/gta5/...` in the base).
-/// Distinct maps that place the same interior keep their own entries.
+/// Nothing is merged here on the strength of a file name: a DLC copy of a
+/// base-game map and an unrelated map that happens to share its name look
+/// identical from the index's side, and dropping one would silently hide a
+/// real placement. `plot` reads every location and decides which of them
+/// place the interior in the same spot.
 fn record_mlo_instance(out: &mut HashMap<u32, Vec<EntryLoc>>, archetype: u32, loc: EntryLoc) {
-    let entries = out.entry(archetype).or_default();
-    match entries.iter_mut().find(|e| ymap_file_name(&e.inner_path) == ymap_file_name(&loc.inner_path)) {
-        Some(existing) => *existing = loc,
-        None => entries.push(loc),
-    }
-}
-
-/// The last `/`-separated segment of an entry path, lowercased.
-fn ymap_file_name(inner_path: &str) -> String {
-    inner_path.rsplit(['/', '\\']).next().unwrap_or(inner_path).to_lowercase()
+    out.entry(archetype).or_default().push(loc);
 }
 
 /// Merges `rels` into `out`, first child-wins — matching CodeWalker's
@@ -842,10 +831,12 @@ mod tests {
 
     /// A DLC that ships its own copy of a base-game `.ymap` must *replace*
     /// the base entry, not sit beside it: `plot` draws the first placement,
-    /// so a stale base-game copy left in front of the DLC one would be the
-    /// exact opposite of the last-wins rule every other map follows.
+    /// A same-named map in a later archive is usually a DLC copy of the base
+    /// one, but it can equally be an unrelated map that happens to share the
+    /// name — so both are kept, in rank order, and `plot` decides which
+    /// placements are really the same by where they put the interior.
     #[test]
-    fn a_later_archive_replaces_the_same_ymap_rather_than_adding_it() {
+    fn same_named_maps_from_different_archives_are_both_kept() {
         let base = EntryLoc {
             top_archive: PathBuf::from("C:/game/x64a.rpf"),
             nested_rpfs: vec!["levels/gta5/_citye/indust_01.rpf".to_string()],
@@ -859,11 +850,16 @@ mod tests {
         let elsewhere = EntryLoc { inner_path: "other.ymap".to_string(), ..base.clone() };
 
         let mut out: HashMap<u32, Vec<EntryLoc>> = HashMap::new();
+        let base_kept = base.clone();
         record_mlo_instance(&mut out, 7, base);
         record_mlo_instance(&mut out, 7, elsewhere.clone());
         record_mlo_instance(&mut out, 7, dlc.clone());
 
-        assert_eq!(out[&7], vec![dlc, elsewhere], "the DLC copy should replace the base one in place");
+        assert_eq!(
+            out[&7],
+            vec![base_kept, elsewhere, dlc],
+            "every location should be listed, in the order the archives were scanned"
+        );
     }
 
     #[test]
