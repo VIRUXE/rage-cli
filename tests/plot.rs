@@ -91,6 +91,46 @@ fn plots_a_ytyp_in_local_space() {
     assert!(text.contains("MLO-local"), "without a .ymap the plan is in MLO-local coordinates");
 }
 
+/// Two `.ytyp`s each declaring an interior, and no `.ymap` to say which one
+/// was meant: the plan is of the first, and both stderr and the page's
+/// caption say so. The count is of `MloDef`s loaded, not of distinct
+/// archetype hashes — two copies of the same interior are still two
+/// declarations, and the tool cannot tell which the caller meant either.
+#[test]
+fn several_interiors_and_no_ymap_warns_which_one_is_drawn() {
+    let dir = tempfile::tempdir().unwrap();
+    let ytyp = rage_formats::ytyp::tests::minimal_mlo_ytyp();
+    let first = write(dir.path(), "int_a.ytyp", &ytyp);
+    let second = write(dir.path(), "int_b.ytyp", &ytyp);
+
+    let svg = dir.path().join("out.svg");
+    let out = rage(&["plot", &first, &second, "-o", svg.to_str().unwrap()]);
+    assert!(out.status.success(), "stderr:
+{}", String::from_utf8_lossy(&out.stderr));
+
+    let err = String::from_utf8_lossy(&out.stderr);
+    let expected = "2 interiors loaded, drawing";
+    assert!(err.contains("warning: "), "the multi-interior note belongs on stderr: {err}");
+    assert!(err.contains(expected), "{err}");
+    assert!(err.contains("give the .ymap to pick one"), "{err}");
+
+    let text = std::fs::read_to_string(&svg).unwrap();
+    assert!(text.contains(expected), "the caption should carry the same note: {text}");
+}
+
+/// One interior and no `.ymap` needs no such warning: nothing was chosen.
+#[test]
+fn a_single_interior_is_not_warned_about() {
+    let dir = tempfile::tempdir().unwrap();
+    let ytyp = write(dir.path(), "int.ytyp", &rage_formats::ytyp::tests::minimal_mlo_ytyp());
+    let svg = dir.path().join("out.svg");
+    let out = rage(&["plot", &ytyp, "-o", svg.to_str().unwrap()]);
+    assert!(out.status.success(), "stderr:
+{}", String::from_utf8_lossy(&out.stderr));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!err.contains("interiors loaded"), "{err}");
+}
+
 #[test]
 fn folder_input_skips_escrowed_files() {
     let dir = tempfile::tempdir().unwrap();
