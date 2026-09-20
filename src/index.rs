@@ -231,7 +231,7 @@ impl GameIndex {
         let s = self.stats();
         format!(
             "{} dictionaries, {} archetypes, {} resident textures, {} txd parent links, \
-             {} interiors, {} interior placements, {} collision files",
+             {} interiors, {} interior placement rows, {} collision files",
             s.ytds, s.archetypes, s.resident_textures, s.parent_txds,
             s.interiors, s.interior_placements, s.collision_files
         )
@@ -286,6 +286,9 @@ pub struct IndexStats {
     pub resident_textures: usize,
     pub parent_txds: usize,
     pub interiors: usize,
+    /// `.ymap` locations listed across every interior — rows, not distinct
+    /// placements: a map overridden by a DLC pack is listed from both
+    /// archives, and `plot` is what collapses the pair by position.
     pub interior_placements: usize,
     pub collision_files: usize,
 }
@@ -880,7 +883,7 @@ mod tests {
 
         let summary = index.summary();
         assert!(summary.contains("1 interiors"), "{summary}");
-        assert!(summary.contains("2 interior placements"), "{summary}");
+        assert!(summary.contains("2 interior placement rows"), "{summary}");
         assert!(summary.contains("1 collision files"), "{summary}");
     }
 

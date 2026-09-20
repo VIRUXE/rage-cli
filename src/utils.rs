@@ -72,11 +72,12 @@ mod tests {
     }
 }
 
-/// Every file under `dir`, recursively. Symlinked directories are not
-/// followed — a junction pointing at one of its own parents would otherwise
-/// recurse without end — and a subdirectory that cannot be read costs one
-/// stderr line rather than the whole walk. Only `dir` itself being unreadable
-/// is an error: the caller named that one.
+/// Every file under `dir`, recursively. A link to a file is followed like
+/// any other file; a link to a *directory* is not walked into — a junction
+/// pointing at one of its own parents would otherwise recurse without end —
+/// and a subdirectory that cannot be read costs one stderr line rather than
+/// the whole walk. Only `dir` itself being unreadable is an error: the caller
+/// named that one.
 pub fn walkdir(dir: &std::path::Path) -> anyhow::Result<Vec<std::path::PathBuf>> {
     use anyhow::Context as _;
     let mut out = Vec::new();
@@ -97,10 +98,17 @@ pub fn walkdir(dir: &std::path::Path) -> anyhow::Result<Vec<std::path::PathBuf>>
                 continue;
             }
         };
+        let path = entry.path();
         if file_type.is_symlink() {
+            // A link to a file is a file: a resource folder that links its
+            // shared props in should still have them drawn. Only a link to a
+            // directory is left alone, since that is the one that can point
+            // at its own parent. `is_dir` here resolves the link on purpose.
+            if !path.is_dir() {
+                out.push(path);
+            }
             continue;
         }
-        let path = entry.path();
         if file_type.is_dir() {
             match walkdir(&path) {
                 Ok(files) => out.extend(files),
@@ -185,6 +193,44 @@ mod walk_tests {
         let names: Vec<String> =
             files.iter().map(|p| p.file_name().unwrap().to_string_lossy().into_owned()).collect();
         assert_eq!(names, vec!["real.ydr"], "the linked directory should be skipped, not walked");
+    }
+
+    /// A symlinked *file* is a file like any other: a resource folder that
+    /// links its shared props in should still have them drawn. Only the
+    /// directory case risks a loop.
+    #[test]
+    fn a_linked_file_is_walked_like_any_other() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let real = root.join("real.ydr");
+        touch(&real);
+        let link = root.join("linked.ydr");
+
+        if !make_file_link(&real, &link) {
+            eprintln!("skipping: this OS/account cannot link files");
+            return;
+        }
+
+        let mut names: Vec<String> =
+            walkdir(root).unwrap().iter().map(|p| p.file_name().unwrap().to_string_lossy().into_owned()).collect();
+        names.sort();
+        assert_eq!(names, vec!["linked.ydr", "real.ydr"], "a linked file should be yielded, not dropped");
+    }
+
+    /// True when `link` now stands for the file `target`. A symlink is what
+    /// this is really about; a hard link is the fallback where Windows
+    /// refuses one, and leaves the symlink branch untested on that machine.
+    fn make_file_link(target: &Path, link: &Path) -> bool {
+        #[cfg(windows)]
+        let symlinked = std::os::windows::fs::symlink_file(target, link).is_ok();
+        #[cfg(not(windows))]
+        let symlinked = std::os::unix::fs::symlink(target, link).is_ok();
+
+        if symlinked {
+            return true;
+        }
+        eprintln!("note: falling back to a hard link; the symlink branch is untested here");
+        std::fs::hard_link(target, link).is_ok()
     }
 
     /// True when `link` now points at `target`. Windows needs either developer
