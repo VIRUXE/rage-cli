@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use rage_formats::{
     is_fxap, parse_ybn, parse_ydd, parse_ydr, parse_ymap_entities, parse_ymap_mlo_instances, parse_ynv, parse_ytyp,
-    rage_joaat, Drawable, MloInstance, Ybn, YmapEntity, Ynv, Ytyp,
+    rage_joaat, Drawable, MloInstance, Vec3, Ybn, YmapEntity, Ynv, Ytyp,
 };
 
 use crate::index::GameIndex;
@@ -321,6 +321,40 @@ fn report_skips(skipped: &[Skipped]) {
     }
 }
 
+/// Two interior placements this close together are the same placement seen
+/// twice: a DLC pack shipping its own copy of a base-game map re-states the
+/// position, but rarely to the last float.
+const SAME_PLACEMENT_METRES: f32 = 0.5;
+
+/// Collapses placements that the game itself would only load once. A `.ymap`
+/// overridden by a later archive is read twice — once from the base game,
+/// once from the pack that replaces it — and both copies place the interior
+/// in the same spot. The last in rank order wins, which is the DLC copy, so
+/// what is drawn (and counted in the note) is what the game would load.
+///
+/// Instances further apart than `SAME_PLACEMENT_METRES` are separate
+/// placements of a repeated interior — a garage, an apartment — and all of
+/// them are kept. Returns how many survived.
+fn dedupe_placements(ymaps: &mut [(String, Vec<YmapEntity>, Vec<MloInstance>)]) -> usize {
+    let all: Vec<Vec3> =
+        ymaps.iter().flat_map(|(_, _, instances)| instances.iter().map(|i| i.entity.position)).collect();
+    let same = |a: Vec3, b: Vec3| {
+        (a.x - b.x).abs() <= SAME_PLACEMENT_METRES
+            && (a.y - b.y).abs() <= SAME_PLACEMENT_METRES
+            && (a.z - b.z).abs() <= SAME_PLACEMENT_METRES
+    };
+    let keep: Vec<bool> = (0..all.len()).map(|i| !all[i + 1..].iter().any(|&later| same(all[i], later))).collect();
+
+    let mut next = 0;
+    for (_, _, instances) in ymaps.iter_mut() {
+        instances.retain(|_| {
+            next += 1;
+            keep[next - 1]
+        });
+    }
+    keep.iter().filter(|kept| **kept).count()
+}
+
 /// A vanilla interior named on the command line, e.g. `v_bahama` or
 /// `0x8ae4f2c2`: the game index says which `.ytyp` declares it, which
 /// `.ymap`s place it and whether a `.ybn` shares its name, and each of those
@@ -350,9 +384,9 @@ fn add_archetype(name_or_hash: &str, keys: Option<&GtaKeys>, exe: Option<&Path>,
     src.ytyps.push((loc.inner_path.clone(), ytyp));
 
     let placements = index.mlo_instances.get(&hash).map(Vec::as_slice).unwrap_or(&[]);
-    // Counted in placements, not files: one .ymap can place the same
-    // interior several times, and the note is about which one is drawn.
-    let mut placements_found = 0usize;
+    // Where this archetype's maps start, so only they are deduped below:
+    // an earlier input may have put its own .ymaps in the same list.
+    let first_ymap = src.ymaps.len();
     for loc in placements {
         let data = match index.load_bytes(loc, keys) {
             Ok(data) => data,
@@ -370,7 +404,6 @@ fn add_archetype(name_or_hash: &str, keys: Option<&GtaKeys>, exe: Option<&Path>,
             Ok((mut entities, mut instances)) => {
                 entities.retain(|e| e.archetype_hash == hash);
                 instances.retain(|i| i.entity.archetype_hash == hash);
-                placements_found += instances.len();
                 src.ymaps.push((loc.inner_path.clone(), entities, instances));
             }
             Err(err) => {
@@ -379,6 +412,9 @@ fn add_archetype(name_or_hash: &str, keys: Option<&GtaKeys>, exe: Option<&Path>,
             }
         }
     }
+    // Counted in placements, not files: one .ymap can place the same
+    // interior several times, and the note is about which one is drawn.
+    let placements_found = dedupe_placements(&mut src.ymaps[first_ymap..]);
     if placements_found > 1 {
         src.notes.push(format!("{placements_found} placements in the game, drawing the first"));
     }
@@ -401,7 +437,84 @@ fn add_archetype(name_or_hash: &str, keys: Option<&GtaKeys>, exe: Option<&Path>,
 
 #[cfg(test)]
 mod tests {
-    use super::{too_many_drawables, MAX_FOLDER_DRAWABLES};
+    use super::{dedupe_placements, too_many_drawables, MAX_FOLDER_DRAWABLES};
+    use rage_formats::{MloInstance, Vec3, YmapEntity};
+
+    fn instance(x: f32, y: f32, z: f32) -> MloInstance {
+        MloInstance {
+            entity: YmapEntity {
+                archetype_hash: 7,
+                flags: 0,
+                guid: 0,
+                position: Vec3::new(x, y, z),
+                rotation: [0.0, 0.0, 0.0, 1.0],
+                scale_xy: 1.0,
+                scale_z: 1.0,
+                parent_index: -1,
+                lod_dist: 100.0,
+                is_mlo_instance: true,
+            },
+            group_id: 0,
+            floor_id: 0,
+            default_entity_sets: Vec::new(),
+            num_exit_portals: 0,
+        }
+    }
+
+    fn ymap(name: &str, instances: Vec<MloInstance>) -> (String, Vec<YmapEntity>, Vec<MloInstance>) {
+        (name.to_string(), Vec::new(), instances)
+    }
+
+    fn positions(ymaps: &[(String, Vec<YmapEntity>, Vec<MloInstance>)]) -> Vec<(String, Vec3)> {
+        ymaps
+            .iter()
+            .flat_map(|(name, _, instances)| instances.iter().map(|i| (name.clone(), i.entity.position)))
+            .collect()
+    }
+
+    /// A DLC pack ships its own copy of a base-game map, so the same interior
+    /// is placed twice in the same spot. The later (DLC) copy is the one the
+    /// game loads, so it is the one kept.
+    #[test]
+    fn placements_in_the_same_spot_collapse_to_the_last_one() {
+        let mut ymaps = vec![
+            ymap("base.ymap", vec![instance(100.0, 200.0, 30.0)]),
+            ymap("dlc.ymap", vec![instance(100.2, 200.1, 30.0)]),
+        ];
+        assert_eq!(dedupe_placements(&mut ymaps), 1);
+        assert_eq!(positions(&ymaps), vec![("dlc.ymap".to_string(), Vec3::new(100.2, 200.1, 30.0))]);
+    }
+
+    /// A repeated interior (a garage, an apartment) is placed many times over
+    /// the map; those are separate placements and all of them are kept.
+    #[test]
+    fn placements_further_apart_than_half_a_metre_are_all_kept() {
+        let mut ymaps = vec![
+            ymap("a.ymap", vec![instance(0.0, 0.0, 0.0), instance(0.0, 0.6, 0.0)]),
+            ymap("b.ymap", vec![instance(500.0, 0.0, 0.0)]),
+        ];
+        assert_eq!(dedupe_placements(&mut ymaps), 3);
+        assert_eq!(positions(&ymaps).len(), 3);
+    }
+
+    /// Two maps that merely share a file name can place the interior in two
+    /// different spots; the index now keeps both, and both are drawn.
+    #[test]
+    fn same_named_maps_placing_the_interior_elsewhere_both_survive() {
+        let mut ymaps = vec![
+            ymap("x64a.rpf/int.ymap", vec![instance(0.0, 0.0, 0.0)]),
+            ymap("dlc.rpf/int.ymap", vec![instance(-1200.0, 450.0, 60.0)]),
+        ];
+        assert_eq!(dedupe_placements(&mut ymaps), 2);
+        assert_eq!(positions(&ymaps).len(), 2);
+    }
+
+    /// Nothing placed is still nothing placed.
+    #[test]
+    fn no_placements_dedupe_to_none() {
+        let mut ymaps = vec![ymap("empty.ymap", Vec::new())];
+        assert_eq!(dedupe_placements(&mut ymaps), 0);
+    }
 
     /// The documented rule is "fewer than 200 drawables are drawn", so 200
     /// itself is already too many.
