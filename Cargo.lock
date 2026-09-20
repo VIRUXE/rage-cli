@@ -679,6 +679,8 @@ dependencies = [
 [[package]]
 name = "rage-formats"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3a2b5980d9d7fa223226ce57da1d7847552bba0777e8adee3d407e05b3b93d5e"
 dependencies = [
  "anyhow",
  "flate2",
@@ -690,6 +692,8 @@ dependencies = [
 [[package]]
 name = "rage-render"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7c9990224316af78a855cab5e47e486923281e4ee25aab6451b4c901b27fe374"
 dependencies = [
  "anyhow",
  "console_error_panic_hook",
@@ -751,6 +755,8 @@ checksum = "6c20b6793b5c2fa6553b250154b78d6d0db37e72700ae35fad9387a46f487c97"
 [[package]]
 name = "rpf-archive"
 version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9230e5e52f52335d49e6b6e2f439ea0bd52f6e201fc283812cad8cc9ec0bf7bc"
 dependencies = [
  "aes",
  "anyhow",

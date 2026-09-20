@@ -19,16 +19,16 @@ thiserror = "1.0"
 log = "0.4"
 env_logger = "0.11"
 clap = { version = "4.5", features = ["derive", "env"] }
-rpf-archive = { version = "0.10", path = "../rpf-archive-rs" }
-rage-formats = { version = "0.1", path = "../rage-formats" }
-rage-render = { version = "0.1", path = "../rage-render" }
+rpf-archive = "0.10"
+rage-formats = "0.1"
+rage-render = "0.1"
 ureq = "3.4"
 json = "0.12"
 sha2 = "0.10"
 
 [dev-dependencies]
 tempfile = "3.10"
-rage-formats = { version = "0.1", path = "../rage-formats", features = ["test-support"] }
+rage-formats = { version = "0.1", features = ["test-support"] }
 
 # Cross-compilation targets
 [target.'cfg(windows)'.dependencies]
