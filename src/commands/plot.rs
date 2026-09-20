@@ -343,9 +343,30 @@ fn stacked_rooms_warning(rooms: &[RoomShape], stacked: &[(usize, usize)]) -> Opt
 /// off, so a room counts as centred when its centre is well inside its own
 /// half-extent. Requiring it of every room keeps a real layout — whose rooms
 /// are metres apart — from ever matching.
+///
+/// Some vanilla interiors (v_bahama) store the same kind of half-extents
+/// around a point that is not the origin. Those show up another way: every
+/// room's centre lies inside the other rooms' boxes, whereas the rooms of a
+/// real layout sit side by side. When most rooms nest like that, the boxes
+/// are not positions either.
 fn rooms_unpositioned(rooms: &[MloRoom]) -> bool {
     let live: Vec<&MloRoom> = rooms.iter().skip(1).collect();
-    live.len() >= 2 && live.iter().all(|r| centred_on_origin(r.bb_min.x, r.bb_max.x) && centred_on_origin(r.bb_min.y, r.bb_max.y))
+    if live.len() < 2 {
+        return false;
+    }
+    let centred = live.iter().all(|r| centred_on_origin(r.bb_min.x, r.bb_max.x) && centred_on_origin(r.bb_min.y, r.bb_max.y));
+    let nested = live
+        .iter()
+        .enumerate()
+        .filter(|(i, r)| {
+            let cx = (r.bb_min.x + r.bb_max.x) / 2.0;
+            let cy = (r.bb_min.y + r.bb_max.y) / 2.0;
+            live.iter().enumerate().any(|(j, other)| {
+                j != *i && cx > other.bb_min.x && cx < other.bb_max.x && cy > other.bb_min.y && cy < other.bb_max.y
+            })
+        })
+        .count();
+    centred || nested * 2 > live.len()
 }
 
 fn centred_on_origin(lo: f32, hi: f32) -> bool {
@@ -669,6 +690,24 @@ mod tests {
         assert!(!rooms_unpositioned(&[limbo.clone(), half(4.0, 3.0), placed]));
         assert!(!rooms_unpositioned(&[limbo, half(4.0, 3.0)]), "one room is not a pattern");
         assert!(!rooms_unpositioned(&[]));
+    }
+
+    #[test]
+    fn rooms_are_unpositioned_when_they_nest_inside_each_other() {
+        // As v_bahama stores them: half-extents around a point that is not
+        // the origin, so every room's centre sits inside the others' boxes.
+        // Real rooms are side by side, never one inside the next.
+        let limbo = room("limbo", Vec3::new(9.0, 6.0, 0.0), Vec3::new(11.0, 8.0, 3.0), &[]);
+        let dance = room("dancefloor", Vec3::new(2.0, 1.0, 0.0), Vec3::new(18.0, 13.0, 3.0), &[]);
+        let club = room("clubroom", Vec3::new(6.0, 4.0, 0.0), Vec3::new(14.0, 10.0, 3.0), &[]);
+        let entry = room("entry", Vec3::new(8.5, 5.5, 0.0), Vec3::new(12.0, 9.0, 3.0), &[]);
+        assert!(rooms_unpositioned(&[limbo.clone(), dance.clone(), club.clone(), entry.clone()]));
+
+        // The same three rooms laid out next to each other stay as stored,
+        // even though the dance floor's box overlaps the club's a little.
+        let club_beside = room("clubroom", Vec3::new(17.0, 1.0, 0.0), Vec3::new(25.0, 7.0, 3.0), &[]);
+        let entry_beside = room("entry", Vec3::new(2.0, 14.0, 0.0), Vec3::new(5.5, 17.5, 3.0), &[]);
+        assert!(!rooms_unpositioned(&[limbo, dance, club_beside, entry_beside]));
     }
 
     #[test]
