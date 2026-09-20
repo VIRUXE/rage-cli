@@ -18,6 +18,7 @@ rpf-cli](#upgrading-from-rpf-cli).
 - [Quick start](#quick-start)
 - [Concepts](#concepts)
 - [Commands](#commands)
+- [Samples](#samples)
 - [Recipes](#recipes)
 - [Configuration](#configuration)
 - [Architecture](#architecture)
@@ -180,6 +181,31 @@ debug logging, `--no-update-check` to skip the daily release check.
 | `index build \| info \| clear` | the game-wide texture and archetype index (`--exe` required) |
 | `update check \| install` | self-update from GitHub releases |
 
+## Samples
+
+One picture per kind of media `rage` writes, with the command that made it.
+The interior is Gabz's cat cafe (a FiveM resource) over the navmesh built
+in the recipe below; the props are vanilla.
+
+| Media | Command | Sample |
+|---|---|---|
+| Interior plan, all layers (PNG) | `plot <resource folder> navmesh[108][96].ynv --marker ...` | [plot-catcafe.png](docs/images/plot-catcafe.png) |
+| One storey with labels (SVG) | `plot ... --floor-z 21.25 --labels` | [plot-catcafe-floor.svg](docs/images/plot-catcafe-floor.svg) |
+| Rooms, portals and navmesh only (WebP) | `plot ... --floor-z 21.25 --layers rooms,portals,navmesh --scale 20` | [plot-catcafe-rooms.webp](docs/images/plot-catcafe-rooms.webp) |
+| Vanilla interior by name (JPEG) | `plot v_bahama --scale 20` | [plot-bahama.jpg](docs/images/plot-bahama.jpg) |
+| Model from several angles (JPEG grid) | `screenshot weapons.rpf w_ar_carbinerifle.ydr --views front,top,iso --grid` | [screenshot-carbinerifle-grid.jpg](docs/images/screenshot-carbinerifle-grid.jpg) |
+| Model from one angle (WebP) | `screenshot weapons.rpf w_ar_carbinerifle.ydr --views iso --size 800x500 --format webp` | [screenshot-carbinerifle-iso.webp](docs/images/screenshot-carbinerifle-iso.webp) |
+| Vehicle with wheels and paint (JPEG grid) | `screenshot vehicles.rpf adder.yft --views front,left,iso --grid --ytd adder --ytd vehshare --paint "#8b1a1a"` | [screenshot-adder-paint-grid.jpg](docs/images/screenshot-adder-paint-grid.jpg) |
+| Translucent model on a transparent background (PNG) | `screenshot lev_des_mp_dlc.rpf hei_prop_pill_bag_01.ydr --views front --background transparent` | [screenshot-pill-bag-transparent.png](docs/images/screenshot-pill-bag-transparent.png) |
+| One texture (PNG) | `textures weapons.rpf w_ar_carbinerifle.ytd --max-size 512` | [textures-carbinerifle-diffuse.png](docs/images/textures-carbinerifle-diffuse.png) |
+| Texture dictionary contact sheet (JPEG) | `textures weapons.rpf w_ar_carbinerifle.ytd --sheet --max-size 256` | [textures-carbinerifle-sheet.jpg](docs/images/textures-carbinerifle-sheet.jpg) |
+| Navmesh polygons (OBJ) | `navmesh export navmesh[108][96].ynv` | [navmesh-catcafe.obj](docs/samples/navmesh-catcafe.obj) |
+| Placed collision (OBJ) | `navmesh ybn-obj denis3d_catcafe.ybn --ymap denis3d_catcafe_milo_.ymap` | [collision-catcafe.obj](docs/samples/collision-catcafe.obj) |
+
+`screenshot`, `textures` and `plot` all take `--format png|jpg|webp` (`plot`
+reads it off the `-o` extension, and adds `svg`); `--json` output and
+`extract` are data, not media, so they are not pictured.
+
 ## Recipes
 
 ### Look inside an archive
@@ -278,6 +304,15 @@ rage screenshot ./nested/models/cdimages/weapons.rpf w_ar_carbinerifle.ydr --vie
 
 ![Carbine rifle rendered front, top and iso](docs/images/screenshot-carbinerifle-grid.jpg)
 
+Without `--grid` every view is its own file, named after the model and the
+view, and `--format` picks PNG, JPEG or WebP:
+
+```sh
+rage screenshot ./nested/models/cdimages/weapons.rpf w_ar_carbinerifle.ydr --views iso --size 800x500 --format webp
+```
+
+![Carbine rifle from the iso view, as WebP](docs/images/screenshot-carbinerifle-iso.webp)
+
 Textures a model references but does not carry come from `--ytd`,
 repeatable, earlier ones winning, and after that from the index. A vehicle
 takes its own dictionary plus the shared one:
@@ -349,6 +384,11 @@ anything that has alpha:
 
 ![Contact sheet of the carbine rifle's texture dictionary](docs/images/textures-carbinerifle-sheet.jpg)
 
+Each texture on its own is what the first command writes; the carbine's
+diffuse map at `--max-size 512`:
+
+![The carbine rifle's diffuse texture](docs/images/textures-carbinerifle-diffuse.png)
+
 PNG is lossless and the best default. WebP output is lossless-only, JPEG
 drops the alpha channel, and `--max-size` caps the longest edge so files stay
 small. The old `ytd` command still works as an alias for `textures`, and
@@ -413,6 +453,11 @@ Point it at a resource folder and it sorts out what it's given:
 rage plot resources/my_interior -o plan.svg
 ```
 
+A cat cafe interior drawn from its resource folder together with the navmesh
+cell built for it further down; every layer on, all storeys at once:
+
+![Cat cafe interior: rooms, portals, props, collision and navmesh from above](docs/images/plot-catcafe.png)
+
 Loose files work the same way, either by extension or named explicitly when
 the extension doesn't say enough:
 
@@ -434,6 +479,8 @@ A vanilla MLO can be named directly, resolved through the game index
 rage plot v_bahama -o plan.png
 ```
 
+![Bahama Mamas drawn from the game files by archetype name](docs/images/plot-bahama.jpg)
+
 `--layers rooms,portals,entities,collision,drawable,navmesh` picks what gets
 drawn (the default is all of them); dropping `collision,drawable` on a big
 interior is the quickest way to a readable page. A resource that stacks
@@ -441,6 +488,15 @@ several storeys in one MLO draws as an unreadable pile of overlapping rooms
 by default; `plot` warns about it on stderr and names the rooms involved, and
 `--floor-z Z` (one storey, `Z-0.3` to `Z+2.0` m) or `--z-range LO,HI` draws
 just one.
+
+The cat cafe's ground floor at `--floor-z 21.25 --labels`, as SVG:
+
+![Cat cafe ground floor with room, portal and prop labels](docs/images/plot-catcafe-floor.svg)
+
+The same storey with `--layers rooms,portals,navmesh`, the quickest view
+when checking where a navmesh leaks between rooms:
+
+![Cat cafe rooms, portals and navmesh only](docs/images/plot-catcafe-rooms.webp)
 
 SVG keeps labels and lines crisp at any zoom, with the meshes rasterised into
 one embedded image; PNG, JPG and WebP are for a quick screenshot to paste
@@ -504,6 +560,9 @@ dashed, the interior's own navmesh is green, sunk polygons (cut off from the
 world when the interior swallowed them) are dashed red, and a grid, scale bar
 and legend with per-layer counts sit around the plan so `21.25` and the
 marker line up with what actually got built.
+The plot from step 4 for the cat cafe is [docs/images/plot-catcafe.png](docs/images/plot-catcafe.png);
+the OBJ files step 2 and `navmesh export` write for it are in
+[docs/samples](docs/samples).
 
 What `build` does, in order:
 
