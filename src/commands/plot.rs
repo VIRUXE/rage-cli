@@ -8,11 +8,12 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use rage_formats::{encode_image, rage_joaat, ImageFormat, MloDef, MloInstance, MloRoom, Vec3, YmapEntity};
 use rage_render::{
-    plan_png, plan_svg, quad_footprint, rooms_stacked, EntityMark, Layer, Marker, NavClass, NavShape, PlanOptions,
-    PlanReport, PortalShape, RoomShape, Scene, Tri, FLOOR_BAND,
+    plan_png, plan_svg, quad_footprint, rooms_stacked, scene_bounds, EntityMark, Layer, Marker, NavClass, NavShape,
+    PlanOptions, PlanReport, PortalShape, RoomShape, Scene, Tri, FLOOR_BAND,
 };
 
 use crate::plot_inputs::{self, Explicit, Mesh, PlotSources, SkipReason};
+use crate::props::{PropResolver, PropShape};
 use crate::rpf::GtaKeys;
 use crate::utils::{parse_marker, parse_pair, parse_quad};
 
@@ -93,9 +94,10 @@ pub struct PlotArgs {
     #[arg(long, value_name = "X0,Y0,X1,Y1")]
     pub region: Option<String>,
 
-    /// Pixels per metre
-    #[arg(long, default_value = "30")]
-    pub scale: f32,
+    /// Pixels per metre (default 30, lowered to fit the page when the
+    /// area drawn is large)
+    #[arg(long, value_name = "PX")]
+    pub scale: Option<f32>,
 
     /// Markers to draw: "x,y,label"; repeatable
     #[arg(long, value_name = "X,Y,LABEL")]
@@ -104,6 +106,15 @@ pub struct PlotArgs {
     /// Label portals and props (rooms and markers are always labelled)
     #[arg(long)]
     pub labels: bool,
+
+    /// How many distinct prop models an exterior map may draw; the rest are
+    /// boxes or marks
+    #[arg(long, default_value = "500", value_name = "N")]
+    pub props: usize,
+
+    /// Draw exterior map entities as marks only, no model or box
+    #[arg(long)]
+    pub no_props: bool,
 
     /// Heading for the page (default: the input, region and height band)
     #[arg(long)]
@@ -156,7 +167,8 @@ pub fn run(args: &PlotArgs, keys: Option<&GtaKeys>, exe: Option<&Path>) -> Resul
     let sources = plot_inputs::resolve(&args.inputs, &explicit, keys, exe)?;
 
     let placement = find_placement(&sources);
-    let scene = build_scene(args, &sources, &placement, z_band, region, markers)?;
+    let mut props = PropResolver::new(&sources, keys, exe, !args.no_props, args.props);
+    let scene = build_scene(args, &sources, &placement, z_band, region, markers, &mut props)?;
 
     if z_band.is_none() {
         let stacked = rooms_stacked(&scene.rooms);
@@ -165,14 +177,20 @@ pub fn run(args: &PlotArgs, keys: Option<&GtaKeys>, exe: Option<&Path>) -> Resul
         }
     }
 
-    let opts = PlanOptions {
-        region,
-        scale: args.scale,
-        z_band,
-        layers: args.layers.iter().map(|l| Layer::from(*l)).collect(),
-        labels: args.labels,
-        ..Default::default()
+    let layers: Vec<Layer> = args.layers.iter().map(|l| Layer::from(*l)).collect();
+    let defaults = PlanOptions::default();
+    let scale = match args.scale {
+        Some(scale) => scale,
+        None => {
+            let framed = region.or_else(|| scene_bounds(&scene, &layers, z_band));
+            let scale = fit_scale(framed, DEFAULT_SCALE, defaults.max_pixels);
+            if scale < DEFAULT_SCALE {
+                eprintln!("scale lowered to {scale} px/m to fit the page; pass --scale or --region for more detail");
+            }
+            scale
+        }
     };
+    let opts = PlanOptions { region, scale, z_band, layers, labels: args.labels, ..defaults };
 
     let report = match output {
         Output::Svg => {
@@ -193,6 +211,25 @@ pub fn run(args: &PlotArgs, keys: Option<&GtaKeys>, exe: Option<&Path>) -> Resul
     }
     println!("Wrote {} ({})", args.output.display(), summary(&report));
     Ok(())
+}
+
+/// The usual pixels per metre, when nothing asks for another.
+const DEFAULT_SCALE: f32 = 30.0;
+
+/// `wanted` px/m, or as much as keeps a page of `framed` (with the 2 m pad
+/// the planner adds each side) within `max_pixels`, rounded down to a half.
+fn fit_scale(framed: Option<[f32; 4]>, wanted: f32, max_pixels: u64) -> f32 {
+    let Some([x0, y0, x1, y1]) = framed else { return wanted };
+    let (w, h) = ((x1 - x0).abs() as f64 + 4.0, (y1 - y0).abs() as f64 + 4.0);
+    if !(w.is_finite() && h.is_finite()) || w * h <= 0.0 {
+        return wanted;
+    }
+    // The page also carries a header and legend; leave a fifth for them.
+    let fits = (max_pixels as f64 * 0.8 / (w * h)).sqrt();
+    if fits >= wanted as f64 {
+        return wanted;
+    }
+    ((fits * 2.0).floor() / 2.0).max(0.5) as f32
 }
 
 /// `620x540 px, region -585.0,-1070.0..-570.0,-1055.0; 5 rooms, 42 navmesh polys`.
@@ -279,9 +316,13 @@ fn find_placement(sources: &PlotSources) -> Placement {
             };
         }
     }
-    for (name, entities, _) in &sources.ymaps {
-        if let Some(entity) = entities.first() {
-            return Placement { entity: Some(*entity), source: Some(name.clone()), instance: None, mlo, mlo_count };
+    // A plain entity places an interior only when there is an interior to
+    // place; the entities of an exterior map are drawn where they are.
+    if mlo.is_some() {
+        for (name, entities, _) in &sources.ymaps {
+            if let Some(entity) = entities.first() {
+                return Placement { entity: Some(*entity), source: Some(name.clone()), instance: None, mlo, mlo_count };
+            }
         }
     }
     Placement { entity: None, source: None, instance: None, mlo, mlo_count }
@@ -416,11 +457,16 @@ fn z_band(args: &PlotArgs) -> Result<Option<(f32, f32)>> {
 
 fn build_scene(
     args: &PlotArgs, sources: &PlotSources, placement: &Placement, z_band: Option<(f32, f32)>,
-    region: Option<[f32; 4]>, markers: Vec<Marker>,
+    region: Option<[f32; 4]>, markers: Vec<Marker>, props: &mut PropResolver<'_>,
 ) -> Result<Scene> {
     let mut scene = Scene::default();
-    let name_of = |hash: u32| sources.names.get(&hash).cloned().unwrap_or_else(|| format!("{hash:#010x}"));
+    let names = crate::names::load(&[], None).unwrap_or_else(|_| rage_formats::NameTable::core());
+    let name_of = |hash: u32| sources.names.get(&hash).cloned().unwrap_or_else(|| names.resolve(hash).into_owned());
     let mut estimated_rooms = false;
+    // How much of the page comes from the interior itself (and so needs
+    // the .ymap to place it), as against exterior entities already in
+    // world space.
+    let mut interior_marks = 0usize;
 
     if let Some(mlo) = &placement.mlo {
         // Rooms and portals are stored axis-aligned in the interior's own
@@ -461,6 +507,7 @@ fn build_scene(
                 set: None,
                 faded: false,
             });
+            interior_marks += 1;
         }
         // An instance that names its default entity sets tells us which of
         // the interior's optional prop sets are actually switched on; the
@@ -476,8 +523,58 @@ fn build_scene(
                     set: Some(k),
                     faded,
                 });
+                interior_marks += 1;
             }
         }
+    }
+
+    // The entities of exterior maps: each one marked where it stands, with
+    // its model placed there when one can be found, else its box. On a plot
+    // of an interior only its surroundings are of interest — the vanilla
+    // chunks a resource ships place hundreds of entities over a kilometre,
+    // which would frame the page around the whole block.
+    let neighbourhood = placement.mlo.as_ref().map(|_| interior_neighbourhood(&scene, placement));
+    let mut exterior_entities = 0usize;
+    let mut exterior_maps = 0usize;
+    let mut exterior_skipped = 0usize;
+    for (_, entities, _) in &sources.ymaps {
+        let mut any = false;
+        for entity in entities.iter().filter(|e| !e.is_mlo_instance) {
+            if let Some([x0, y0, x1, y1]) = neighbourhood
+                && !(entity.position.x >= x0 && entity.position.x <= x1 && entity.position.y >= y0 && entity.position.y <= y1)
+            {
+                exterior_skipped += 1;
+                continue;
+            }
+            any = true;
+            exterior_entities += 1;
+            scene.entities.push(EntityMark { position: entity.position, label: name_of(entity.archetype_hash), set: None, faded: false });
+            let put = |v: Vec3| entity.to_world(v);
+            match props.resolve(entity.archetype_hash) {
+                PropShape::Folder { entry, member } => {
+                    let data = &sources.drawables[entry].data;
+                    let chosen: Vec<&rage_formats::Drawable> = match member {
+                        Some(m) => data.get(m).into_iter().collect(),
+                        None => data.iter().collect(),
+                    };
+                    for drawable in chosen {
+                        push_drawable_triangles(&mut scene.drawable, drawable, put);
+                    }
+                }
+                PropShape::Game { drawables, member } => {
+                    let chosen: Vec<&rage_formats::Drawable> = match member {
+                        Some(m) => drawables.get(m).into_iter().collect(),
+                        None => drawables.iter().collect(),
+                    };
+                    for drawable in chosen {
+                        push_drawable_triangles(&mut scene.drawable, drawable, put);
+                    }
+                }
+                PropShape::Box(lo, hi) => push_box_footprint(&mut scene.drawable, lo, hi, put),
+                PropShape::None => {}
+            }
+        }
+        exterior_maps += usize::from(any);
     }
 
     let mut placed_meshes = 0usize;
@@ -490,27 +587,18 @@ fn build_scene(
     }
 
     // A drawable that belongs to the interior is its shell, stored in the
-    // same local space as the rooms; props are not placed per entity yet.
-    for entry in &sources.drawables {
+    // same local space as the rooms. A drawable that stands for an exterior
+    // map's archetype was drawn above, once per placement, and would only
+    // ghost at the origin here.
+    for (i, entry) in sources.drawables.iter().enumerate() {
+        if props.matched_folder.contains(&i) {
+            continue;
+        }
         let placed = is_interior_mesh(entry, placement, "shell");
         placed_meshes += usize::from(placed);
         let put = |v: Vec3| if placed { placement.to_world(v) } else { v };
         for drawable in &entry.data {
-            let Some(lod) = drawable.best_lod() else { continue };
-            for model in &lod.models {
-                for geometry in &model.geometries {
-                    let (Some(vertices), Some(indices)) = (&geometry.vertex_buffer, &geometry.index_buffer) else {
-                        continue;
-                    };
-                    let Ok(unified) = vertices.to_unified_vertices() else { continue };
-                    for face in indices.indices.chunks_exact(3) {
-                        let corner = |i: u32| unified.get(i as usize).map(|v| put(v.position));
-                        if let (Some(a), Some(b), Some(c)) = (corner(face[0]), corner(face[1]), corner(face[2])) {
-                            scene.drawable.push(Tri { v: [a, b, c] });
-                        }
-                    }
-                }
-            }
+            push_drawable_triangles(&mut scene.drawable, drawable, put);
         }
     }
 
@@ -533,8 +621,7 @@ fn build_scene(
 
     // Only geometry stored in the interior's own space needs a .ymap to say
     // where it is; a navmesh cell on its own is already in world coordinates.
-    let needs_placing =
-        !scene.rooms.is_empty() || !scene.portals.is_empty() || !scene.entities.is_empty() || placed_meshes > 0;
+    let needs_placing = !scene.rooms.is_empty() || !scene.portals.is_empty() || interior_marks > 0 || placed_meshes > 0;
     if !sources.ynvs.is_empty() && placement.entity.is_none() && needs_placing {
         eprintln!("warning: navmesh polygons are in world coordinates but the rest of the plan is in the interior's own; pass the .ymap that places it");
     }
@@ -571,6 +658,23 @@ fn build_scene(
         }
     }
     scene.caption.push(band);
+    if exterior_entities > 0 {
+        let maps = if exterior_maps == 1 { "ymap" } else { "ymaps" };
+        let around = if neighbourhood.is_some() { " around the interior" } else { "" };
+        scene.caption.push(format!("{exterior_entities} entities from {exterior_maps} {maps}{around}"));
+        if props.stats.archetypes > 0 && !args.no_props {
+            scene.caption.push(props.stats.line());
+        }
+        if props.stats.over_budget > 0 {
+            eprintln!("warning: {} archetypes past --props {}; drawn as boxes or marks", props.stats.over_budget, args.props);
+        }
+    }
+    if exterior_skipped > 0 {
+        eprintln!("{exterior_skipped} entities of the folder's exterior maps lie beyond the interior's surroundings; not drawn");
+    }
+    if scene.drawable.len() > 2_000_000 {
+        eprintln!("warning: {} drawable triangles; --region, --no-props or --layers can keep the page tractable", scene.drawable.len());
+    }
     if estimated_rooms {
         scene.caption.push("room boxes estimated from props and portals (ytyp boxes are unpositioned)".to_string());
     }
@@ -590,6 +694,69 @@ fn build_scene(
         scene.caption.push(note.clone());
     }
     Ok(scene)
+}
+
+/// How far around the interior an exterior entity still belongs on its
+/// page: the world-space box of its rooms and portals (or, when those are
+/// unpositioned, the placement itself) grown by this much.
+const NEIGHBOURHOOD_METRES: f32 = 25.0;
+
+/// `x0,y0,x1,y1` around what the interior occupies in the world.
+fn interior_neighbourhood(scene: &Scene, placement: &Placement) -> [f32; 4] {
+    fn grow(bb: &mut Option<[f32; 4]>, x: f32, y: f32) {
+        *bb = Some(match *bb {
+            None => [x, y, x, y],
+            Some([x0, y0, x1, y1]) => [x0.min(x), y0.min(y), x1.max(x), y1.max(y)],
+        });
+    }
+    let mut bb: Option<[f32; 4]> = None;
+    for room in scene.rooms.iter().skip(1) {
+        for v in &room.footprint {
+            grow(&mut bb, v.x, v.y);
+        }
+    }
+    for portal in &scene.portals {
+        for c in &portal.corners {
+            grow(&mut bb, c.x, c.y);
+        }
+    }
+    if bb.is_none() {
+        let p = placement.to_world(Vec3::new(0.0, 0.0, 0.0));
+        grow(&mut bb, p.x, p.y);
+    }
+    let [x0, y0, x1, y1] = bb.unwrap_or([0.0; 4]);
+    let m = NEIGHBOURHOOD_METRES;
+    [x0 - m, y0 - m, x1 + m, y1 + m]
+}
+
+/// The best LOD's triangles of `drawable`, through `put`.
+fn push_drawable_triangles(out: &mut Vec<Tri>, drawable: &rage_formats::Drawable, put: impl Fn(Vec3) -> Vec3) {
+    let Some(lod) = drawable.best_lod() else { return };
+    for model in &lod.models {
+        for geometry in &model.geometries {
+            let (Some(vertices), Some(indices)) = (&geometry.vertex_buffer, &geometry.index_buffer) else {
+                continue;
+            };
+            let Ok(unified) = vertices.to_unified_vertices() else { continue };
+            for face in indices.indices.chunks_exact(3) {
+                let corner = |i: u32| unified.get(i as usize).map(|v| put(v.position));
+                if let (Some(a), Some(b), Some(c)) = (corner(face[0]), corner(face[1]), corner(face[2])) {
+                    out.push(Tri { v: [a, b, c] });
+                }
+            }
+        }
+    }
+}
+
+/// An archetype's box as two triangles on its floor, through `put`: what a
+/// prop occupies when its model is not to hand.
+fn push_box_footprint(out: &mut Vec<Tri>, lo: Vec3, hi: Vec3, put: impl Fn(Vec3) -> Vec3) {
+    let a = put(Vec3::new(lo.x, lo.y, lo.z));
+    let b = put(Vec3::new(hi.x, lo.y, lo.z));
+    let c = put(Vec3::new(hi.x, hi.y, lo.z));
+    let d = put(Vec3::new(lo.x, hi.y, lo.z));
+    out.push(Tri { v: [a, b, c] });
+    out.push(Tri { v: [a, c, d] });
 }
 
 #[cfg(test)]
@@ -635,6 +802,17 @@ mod tests {
             corners,
             attached_objects: Vec::new(),
         }
+    }
+
+    #[test]
+    fn the_scale_fits_large_areas_and_leaves_small_ones_alone() {
+        assert_eq!(fit_scale(None, 30.0, 40_000_000), 30.0);
+        assert_eq!(fit_scale(Some([0.0, 0.0, 20.0, 10.0]), 30.0, 40_000_000), 30.0);
+        // A kilometre square at 30 px/m would be 900 Mpx; it comes down.
+        let s = fit_scale(Some([0.0, 0.0, 1000.0, 1000.0]), 30.0, 40_000_000);
+        assert!(s < 6.0 && s >= 0.5, "{s}");
+        assert_eq!(s * 2.0, (s * 2.0).floor(), "rounded to a half");
+        assert!((1004.0 * s as f64).powi(2) <= 40_000_000.0 * 0.8 + 1.0);
     }
 
     #[test]

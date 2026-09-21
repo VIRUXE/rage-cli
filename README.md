@@ -105,6 +105,15 @@ pointers between blocks. Textures (`.ytd`), models (`.ydr`, `.ydd`, `.yft`),
 metadata (`.ytyp`, `.ymap`, `.ymt`), collision (`.ybn`) and navmeshes
 (`.ynv`) are all RSC7. `resource info` shows the header and what a file holds.
 
+**Metadata.** Map data is self-describing: a `.ymap`, `.ytyp` or `.ymt`
+carries the layout of its own structures inside the RSC7 body, and a
+`_manifest.ymf` or `.pso` carries the same in the big-endian PSO container
+(FiveM also accepts hand-written XML manifests). Names in them are JOAAT
+hashes. `resource info` reads the map, type and manifest files by name;
+`resource dump` writes any of them out whole as XML or JSON; `names harvest`
+builds the hash-to-name list from the game's own files so both print names
+rather than `hash_XXXXXXXX`.
+
 **Load order.** The game reads its base archives, then `update.rpf`, then
 each DLC pack in the order `dlclist.xml` and the packs' `setup2.xml` decide.
 Later wins. Commands that fetch something "from the game" (`index`,
@@ -153,7 +162,9 @@ debug logging, `--no-update-check` to skip the daily release check.
 
 | Command | Does |
 |---|---|
-| `resource info <file> [--archive RPF] [--json]` | RSC7 header plus a summary: every texture of a `.ytd`; bounds, LODs, geometry and shaders of a drawable |
+| `resource info <file> [--archive RPF] [--json] [--limit N] [--names FILE]...` | header plus a summary: every texture of a `.ytd`; bounds, LODs, geometry and shaders of a drawable; name, flags, extents and entity table of a `.ymap`; archetypes and interiors of a `.ytyp`; dependencies of a `_manifest.ymf` (PSO, RBF or XML) |
+| `resource dump <file> [--archive RPF] [--json] [-o FILE] [--names FILE]...` | any Meta or PSO file (`.ymap` `.ytyp` `.ymt` `.ymf` `.pso`) as XML in CodeWalker's layout, or as JSON |
+| `names harvest \| info \| lookup <term>...` | the hash-to-name list: build it from the game (`--exe` required), see where it is, or hash a name / name a hash |
 | `textures <archive> <file> [-o DIR] [--format png\|jpg\|webp] [--sheet] [--max-size PX] [--dds]` | export a dictionary's textures, or the textures baked into a drawable, as images (alias `ytd`) |
 
 ### Rendering
@@ -161,7 +172,7 @@ debug logging, `--no-update-check` to skip the daily release check.
 | Command | Does |
 |---|---|
 | `screenshot <archive> <file> [--views ...] [--grid] [--ytd NAME]... [--paint #rrggbb] [--background ...] [--size WxH] [--lod ...] [--entry ...]` | render a `.ydr`/`.ydd`/`.yft` from up to six fixed angles, textures resolved from the file, `--ytd` and the index |
-| `plot <input>... [--ymap\|--ytyp\|--ybn\|--ydr FILE]... [--layers ...] [--floor-z Z\|--z-range LO,HI] [--region ...] [--scale PX] [--marker x,y,label]... [--labels] [--title T] [--quality Q] -o FILE` | a top-down plan of an interior — rooms, portals, props, collision, drawable shell and navmesh — as PNG, JPG, WebP or SVG |
+| `plot <input>... [--ymap\|--ytyp\|--ybn\|--ydr FILE]... [--layers ...] [--floor-z Z\|--z-range LO,HI] [--region ...] [--scale PX] [--marker x,y,label]... [--labels] [--props N\|--no-props] [--title T] [--quality Q] -o FILE` | a top-down plan of an interior — rooms, portals, props, collision, drawable shell and navmesh — or of an exterior map, its entities drawn with their models — as PNG, JPG, WebP or SVG |
 
 ### Navmeshes
 
@@ -440,6 +451,80 @@ rage screenshot ./nested/some_dictionary.ydd --views front,iso        # every en
 rage screenshot ./nested/some_dictionary.ydd --entry 0x<hash> --views front,iso
 ```
 
+### Inspect a map
+
+What does a `.ymap` place, what is it called, and where is it? `resource
+info` answers from the file alone:
+
+```sh
+$ rage resource info resources/bomba_paleto_1/stream/bombaPALETO.ymap
+File:      resources/bomba_paleto_1/stream/bombaPALETO.ymap
+Format:    RSC7  version 2
+...
+Map:       bombaPALETO  parent -
+Flags:     0x0   content 0x1 HD
+Streaming: (-103.67, 6293.98, -169.29)..(462.04, 6832.73, 231.73)
+Extents:   (162.11, 6559.76, 30.71)..(205.70, 6576.39, 31.73)
+Entities:  5 (0 MLO instances)
+     #  archetype                                 x          y        z     yaw scale    lod  flags
+     0  prop_barier_conc_05b                197.263   6573.081   30.780   20.0°  1.00    200  0x20
+     ...
+```
+
+The map's own name is the hash the game knows it by; it prints as text when
+a file next to it, the built-in list or the harvested list has the name.
+Archetype names come from the same places, so run `rage names harvest` once
+(it scans the game's archives for every file stem and every XML name, a few
+minutes) to have vanilla props named. `--json` gives the whole entity list
+with positions, headings and flags; `--limit 0` lists every entity in text.
+
+A manifest works the same way, whatever it was written in:
+
+```sh
+$ rage resource info resources/bomba_paleto_1/stream/_manifest.ymf
+Format:    XML
+Map dependencies (4):
+  bombapaleto -> v_construction
+  cs1_roads_pb_long_0 -> country_01_metadata_021_strm, v_sports, v_construction, ...
+```
+
+And any Meta or PSO file can be written out whole, in the XML layout
+CodeWalker exports (so the two can be diffed) or as JSON:
+
+```sh
+rage resource dump stream/bombaPALETO.ymap -o bombaPALETO.ymap.xml
+rage resource dump stream/_manifest.ymf --json
+```
+
+Hashes with no known name print as `hash_XXXXXXXX`; `rage names lookup
+0x18C49531` looks one up, `rage names lookup prop_barier_conc_05b` hashes a
+name, and `--names FILE` adds a list of your own (one name per line) to any
+of these commands.
+
+### Plot an exterior map
+
+A map that is not an interior — a shop front, a road block, a set of props
+on the vanilla terrain — has no rooms or portals, only entities standing in
+the world. `plot` draws each one where it is, labelled with its archetype,
+and puts the prop's own model there when it can find one: a `.ydr`/`.ydd`
+in the folder named after the archetype, or the game's own model through
+the index when `--exe`/`GTAV_PATH` is set and `rage index build` has run.
+An archetype with no model to hand is drawn as its bounding box (from a
+`.ytyp` in the folder or the index), and failing that as its mark alone.
+
+```sh
+rage plot resources/bomba_paleto_1 --labels -o paleto.png
+```
+
+![A set of concrete barriers on the Paleto Bay road, each drawn from its model](docs/images/plot-paleto.png)
+
+The caption says where the props came from (`props: 12 from game, 2 as
+boxes, 1 unresolved`). `--props N` caps how many distinct models are read
+(500 by default; the rest fall back to boxes) and `--no-props` keeps the
+marks only, for a quick look at a big chunk. The page frames the entities;
+vanilla chunks like `cs1_11.ymap` cover kilometres, so pair them with
+`--region`.
+
 ### Plot an interior
 
 An MLO is a custom interior: one archetype standing in for a room layout,
@@ -619,7 +704,8 @@ Things learned the hard way:
 | `RAGE_KEYS_CACHE` | where recovered keys are cached (default `~/.rage-cli/keys`) |
 | `RAGE_NO_UPDATE_CHECK` | disable the daily release check (also `CI`) |
 | `RAGE_UPDATE_CACHE` | where the update-check stamp lives |
-| `~/.rage-cli/` | keys, index and update stamp; an existing `~/.rpf-cli` is used as is |
+| `RAGE_NAMES` | the harvested hash-to-name list (default `~/.rage-cli/names.txt`) |
+| `~/.rage-cli/` | keys, index, names and update stamp; an existing `~/.rpf-cli` is used as is |
 | `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY` | honoured by the update check and installer |
 
 The `RPF_*` spellings of the variables still work.
@@ -702,8 +788,12 @@ src/
   main.rs            clap definition and dispatch; one line per command
   commands/          one file per command; parse arguments, call the libraries, print
     navmesh.rs       the navmesh subcommands (cell lookup, OBJ/PNG output, build wiring)
-    plot.rs          `plot`: placement, MLO-vs-world-space meshes, room-box estimation, the caption
+    plot.rs          `plot`: placement, MLO-vs-world-space meshes, room-box estimation, exterior entities, the caption
+    resource.rs      `resource info`/`dump`: container detection, per-format summaries, XML/JSON dumps
+    names.rs         `names`: harvesting the game's names, lookups
   plot_inputs.rs     turning plot's free-form inputs (files, a resource folder, a vanilla name) into parsed sources
+  props.rs           what to draw for a placed entity: a folder model, a game model through the index, a box, or nothing
+  names.rs           the name table `resource` prints through: built-in, harvested, `--names`, sibling file stems
   navmesh/mod.rs     the generator: grid, blocking, rectangles, edge linking, sinking
   index.rs           the game-wide index: build (archives in load order), cache format, lookups
   resources.rs       loading a resource by name from an archive or from disk

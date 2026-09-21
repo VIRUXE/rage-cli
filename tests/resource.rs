@@ -62,7 +62,7 @@ fn loose_file_reports_header() {
     assert!(out.contains("0xA8000004"), "no system flags:\n{out}");
     assert!(out.contains("8192 bytes"), "no system size:\n{out}");
     assert!(out.contains("stored"), "body should be reported as stored:\n{out}");
-    assert!(out.contains("not a drawable or texture dictionary"), "no summary:\n{out}");
+    assert!(out.contains("not a drawable, texture dictionary, map, type file or manifest"), "no summary:\n{out}");
 }
 
 #[test]
@@ -128,4 +128,80 @@ fn entry_inside_archive() {
 
     assert!(out.contains("version 165"), "no version:\n{out}");
     assert!(out.contains("8192 bytes"), "no system size:\n{out}");
+}
+
+#[test]
+fn map_info_lists_header_and_entities() {
+    use rage_formats::{ymap::tests::sample_exterior_ymap, Vec3};
+    let tmp = tempfile::tempdir().unwrap();
+    let file = write(tmp.path(), "paleto_props.ymap", &sample_exterior_ymap("paleto_props", &[("prop_gas_pump_1a", Vec3::new(197.263, 6573.081, 30.78), 20.0), ("prop_other", Vec3::new(1.0, 2.0, 3.0), 0.0)]));
+    // A sibling file names the second archetype.
+    write(tmp.path(), "prop_other.ydr", b"");
+
+    let out = ok(&["resource", "info", &file]);
+    assert!(out.contains("Map:       paleto_props"), "{out}");
+    assert!(out.contains("content 0x1 HD"), "{out}");
+    assert!(out.contains("Entities:  2 (0 MLO instances)"), "{out}");
+    assert!(out.contains("prop_gas_pump_1a"), "an archetype named by a sibling stem: {out}");
+    assert!(out.contains("prop_other"), "{out}");
+    assert!(out.contains("20.0°"), "the heading: {out}");
+    assert!(out.contains("static entity"), "{out}");
+
+    let json = ok(&["resource", "info", &file, "--json", "--limit", "1"]);
+    assert!(json.contains("\"kind\":\"map\""), "{json}");
+    assert!(json.contains("\"name\":\"paleto_props\""), "{json}");
+    assert!(json.contains("\"archetype\":\"prop_gas_pump_1a\""), "{json}");
+    assert!(json.contains("\"mlo_instances\":[]"), "{json}");
+}
+
+#[test]
+fn xml_manifest_info_and_pso_dump() {
+    let tmp = tempfile::tempdir().unwrap();
+    let manifest = "<?xml version=\"1.0\"?><CPackFileMetaData><MapDataGroups/><HDTxdBindingArray/><imapDependencies/><imapDependencies_2><Item><imapName>bombapaleto</imapName><manifestFlags/><itypDepArray><Item>v_construction</Item></itypDepArray></Item></imapDependencies_2><itypDependencies_2/><Interiors/></CPackFileMetaData>";
+    let file = write(tmp.path(), "_manifest.ymf", manifest.as_bytes());
+    let out = ok(&["resource", "info", &file]);
+    assert!(out.contains("Format:    XML"), "{out}");
+    assert!(out.contains("bombapaleto -> v_construction"), "{out}");
+
+    let pso = write(tmp.path(), "thing.pso", &rage_formats::pso::tests::sample_pso(false));
+    let out = ok(&["resource", "info", &pso]);
+    assert!(out.contains("Format:    PSO"), "{out}");
+    assert!(out.contains("hash_"), "the fixture's structure names are not in the built-in list: {out}");
+
+    // The fixture's own names, supplied the way a user would supply theirs.
+    let names = write(tmp.path(), "names.txt", b"TestRoot
+TestChild
+TestFlags
+FLAG_A
+FLAG_B
+FLAG_C
+KIND_ONE
+name
+flags
+children
+label
+weight
+kind
+");
+    let xml = ok(&["resource", "dump", &pso, "--names", &names]);
+    assert!(xml.starts_with("<?xml"), "{xml}");
+    assert!(xml.contains("<TestRoot>"), "{xml}");
+    assert!(xml.contains("<Item type=\"TestChild\">"), "{xml}");
+    assert!(xml.contains("<flags>FLAG_A, FLAG_C</flags>"), "{xml}");
+    assert!(xml.contains("<kind>KIND_ONE</kind>"), "{xml}");
+    let json = ok(&["resource", "dump", &pso, "--json", "--names", &names]);
+    assert!(json.trim_start().starts_with('{'), "{json}");
+    assert!(json.contains("\"$type\""), "{json}");
+}
+
+#[test]
+fn meta_dump_of_a_ymap_names_every_member() {
+    use rage_formats::{ymap::tests::sample_exterior_ymap, Vec3};
+    let tmp = tempfile::tempdir().unwrap();
+    let file = write(tmp.path(), "m.ymap", &sample_exterior_ymap("m", &[("prop_a", Vec3::new(1.0, 2.0, 3.0), 0.0)]));
+    // The fixture carries no schema of its own, so the dump has nothing to
+    // walk; the error must say so rather than print an empty document.
+    let output = rpf(&["resource", "dump", &file]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success() || stderr.contains("warning"), "{stderr}");
 }

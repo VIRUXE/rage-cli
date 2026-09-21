@@ -12,3 +12,4 @@ pub mod update;
 pub mod index_cmd;
 pub mod navmesh;
 pub mod plot;
+pub mod names;

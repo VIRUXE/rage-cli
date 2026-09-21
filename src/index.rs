@@ -66,6 +66,14 @@ pub struct GameIndex {
     /// `joaat(lowercase .ybn stem)` -> where that collision file lives. The
     /// collision of an interior usually shares the archetype's own name.
     pub ybn_by_name: HashMap<u32, EntryLoc>,
+    /// `joaat(lowercase stem)` of every `.ydr`, `.ydd` and `.yft` -> where
+    /// it lives; later archives win. What `plot` draws a placed prop from.
+    pub drawable_by_name: HashMap<u32, EntryLoc>,
+    /// Archetype name hash -> `(assetType, model hash)`: which file holds
+    /// its model — a `.ydd` (asset type 3, the dictionary's hash) or a
+    /// `.ydr`/`.yft` named by the model hash. Only kept when it differs
+    /// from the archetype's own name, which is the common case's default.
+    pub archetype_asset: HashMap<u32, (u32, u32)>,
 }
 
 const RESIDENT_DICTS: [&str; 2] = ["mapdetail", "vehshare"];
@@ -222,6 +230,7 @@ impl GameIndex {
             interiors: self.mlo_ytyp.len(),
             interior_placements: self.mlo_instances.values().map(|v| v.len()).sum(),
             collision_files: self.ybn_by_name.len(),
+            drawables: self.drawable_by_name.len(),
         }
     }
 
@@ -231,9 +240,9 @@ impl GameIndex {
         let s = self.stats();
         format!(
             "{} dictionaries, {} archetypes, {} resident textures, {} txd parent links, \
-             {} interiors, {} interior placement rows, {} collision files",
+             {} interiors, {} interior placement rows, {} collision files, {} drawables",
             s.ytds, s.archetypes, s.resident_textures, s.parent_txds,
-            s.interiors, s.interior_placements, s.collision_files
+            s.interiors, s.interior_placements, s.collision_files, s.drawables
         )
     }
 
@@ -291,6 +300,8 @@ pub struct IndexStats {
     /// archives, and `plot` is what collapses the pair by position.
     pub interior_placements: usize,
     pub collision_files: usize,
+    /// `.ydr`/`.ydd`/`.yft` files by name.
+    pub drawables: usize,
 }
 
 /// Every .rpf under `game_root` in the game's load order: base archives,
@@ -490,11 +501,18 @@ fn index_archive(archive: &Archive, archive_path: &Path, nested_rpfs: &[String],
                 if a.is_mlo {
                     out.mlo_ytyp.insert(a.name_hash, loc());
                 }
+                let model = if a.in_drawable_dictionary() { a.drawable_dictionary_hash } else { a.model_hash() };
+                if a.in_drawable_dictionary() || a.is_fragment() || model != a.name_hash {
+                    out.archetype_asset.insert(a.name_hash, (a.asset_type, model));
+                }
             }
         } else if name_lower.ends_with(".ybn") {
             // Name only: a `.ybn` is never parsed while indexing, so this
             // branch costs nothing beyond the directory listing already read.
             out.ybn_by_name.insert(rage_joaat(&stem), loc());
+        } else if name_lower.ends_with(".ydr") || name_lower.ends_with(".ydd") || name_lower.ends_with(".yft") {
+            // Name only, like collision: a model is read when a plot places it.
+            out.drawable_by_name.insert(rage_joaat(&stem), loc());
         } else if name_lower.ends_with(".ymap") {
             // The one branch that reads a file it would otherwise skip. Only
             // the entity list is decoded (`parse_ymap_entities`), and only
@@ -574,7 +592,8 @@ const MAGIC: u32 = 0x5850_4652; // "RPFX" little-endian
 // 4: archetype bounding boxes added (`archetype_box`).
 // 5: MLO ytyp/ymap locations and ybn names for `rage plot`.
 // 6: every placement ymap is kept; plot dedupes by position.
-const FORMAT_VERSION: u32 = 6;
+// 7: drawable locations and archetype asset bindings, for placed props.
+const FORMAT_VERSION: u32 = 7;
 
 fn write_u32(buf: &mut Vec<u8>, v: u32) {
     buf.extend_from_slice(&v.to_le_bytes());
@@ -650,6 +669,19 @@ fn encode(index: &GameIndex) -> Vec<u8> {
     for (hash, loc) in &index.ybn_by_name {
         write_u32(&mut buf, *hash);
         write_loc(&mut buf, loc);
+    }
+
+    write_u32(&mut buf, index.drawable_by_name.len() as u32);
+    for (hash, loc) in &index.drawable_by_name {
+        write_u32(&mut buf, *hash);
+        write_loc(&mut buf, loc);
+    }
+
+    write_u32(&mut buf, index.archetype_asset.len() as u32);
+    for (hash, (kind, model)) in &index.archetype_asset {
+        write_u32(&mut buf, *hash);
+        write_u32(&mut buf, *kind);
+        write_u32(&mut buf, *model);
     }
 
     buf
@@ -766,6 +798,21 @@ fn decode(data: &[u8]) -> Result<GameIndex> {
         index.ybn_by_name.insert(hash, loc);
     }
 
+    let drawable_count = c.u32()? as usize;
+    for _ in 0..drawable_count {
+        let hash = c.u32()?;
+        let loc = read_loc(&mut c)?;
+        index.drawable_by_name.insert(hash, loc);
+    }
+
+    let asset_count = c.u32()? as usize;
+    for _ in 0..asset_count {
+        let hash = c.u32()?;
+        let kind = c.u32()?;
+        let model = c.u32()?;
+        index.archetype_asset.insert(hash, (kind, model));
+    }
+
     Ok(index)
 }
 
@@ -788,6 +835,8 @@ mod tests {
         index.mlo_ytyp.insert(10, loc("v_int_3.ytyp"));
         index.mlo_instances.insert(10, vec![loc("a.ymap"), loc("b.ymap")]);
         index.ybn_by_name.insert(10, loc("v_int_3.ybn"));
+        index.drawable_by_name.insert(11, loc("prop_x.ydr"));
+        index.archetype_asset.insert(12, (3, 13));
 
         let bytes = encode(&index);
         let decoded = decode(&bytes).expect("should decode");
@@ -800,6 +849,8 @@ mod tests {
         assert_eq!(decoded.mlo_ytyp, index.mlo_ytyp);
         assert_eq!(decoded.mlo_instances, index.mlo_instances);
         assert_eq!(decoded.ybn_by_name, index.ybn_by_name);
+        assert_eq!(decoded.drawable_by_name, index.drawable_by_name);
+        assert_eq!(decoded.archetype_asset, index.archetype_asset);
     }
 
     fn loc(inner: &str) -> EntryLoc {

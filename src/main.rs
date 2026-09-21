@@ -5,15 +5,17 @@ use std::path::{Path, PathBuf};
 mod rpf;
 mod commands;
 mod navmesh;
+mod names;
 mod index;
 mod keys;
 mod paths;
 mod plot_inputs;
+mod props;
 mod resources;
 mod update;
 mod utils;
 
-use commands::{info, list, extract, verify, tree, textures, screenshot, create, search, resource, index_cmd, navmesh as navmesh_cmd, plot};
+use commands::{info, list, extract, verify, tree, textures, screenshot, create, search, resource, index_cmd, navmesh as navmesh_cmd, plot, names as names_cmd};
 use commands::update as update_cmd;
 use rpf::GtaKeys;
 
@@ -110,8 +112,11 @@ enum Commands {
     /// Render a .ydr/.ydd/.yft to an image
     Screenshot(screenshot::ScreenshotArgs),
 
-    /// Inspect loose resource files (.ydr/.ytd/...) or entries inside an archive
+    /// Inspect loose resource files (.ydr/.ytd/.ymap/.ytyp/.ymf/...) or entries inside an archive, or dump metadata as XML/JSON
     Resource(resource::ResourceArgs),
+
+    /// Harvest, inspect or query the hash-to-name list used to print metadata
+    Names(names_cmd::NamesArgs),
 
     /// Inspect, fetch, export and build navmesh cells (.ynv)
     Navmesh(navmesh_cmd::NavmeshArgs),
@@ -203,6 +208,7 @@ fn dispatch(command: Commands, keys: Option<&GtaKeys>, exe: Option<&Path>, verbo
         Commands::Plot(args)                                 => plot::run(&args, keys, exe),
         Commands::Update(args)                               => update_cmd::run(&args),
         Commands::Index(args)                                => index_cmd::run(&args, keys, exe),
+        Commands::Names(args)                                => names_cmd::run(&args, keys, exe),
         Commands::Create { input, output, version, encryption } => {
             create::run(&input, &output, version, &encryption, keys)
         }

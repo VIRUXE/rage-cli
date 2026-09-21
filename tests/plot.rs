@@ -246,3 +246,48 @@ fn a_file_reached_twice_is_loaded_once() {
     let twice = ok(&["plot", res.to_str().unwrap(), &ynv, "-o", png.to_str().unwrap()]);
     assert_eq!(twice.split_once("; ").unwrap().1, polys, "the cell was counted twice\n{twice}");
 }
+
+/// An exterior map (plain entities, no interior) draws its entities where
+/// they stand, with the model of any archetype found in the folder placed
+/// at each of them — and never once more at the origin.
+#[test]
+fn plots_an_exterior_map_with_folder_props() {
+    use rage_formats::{build_rsc7, rage_joaat, ydd::tests::minimal_ydr_sections, ymap::tests::sample_exterior_ymap};
+    let dir = tempfile::tempdir().unwrap();
+    let stream = dir.path().join("stream");
+    std::fs::create_dir(&stream).unwrap();
+    let ymap = sample_exterior_ymap("paleto_props", &[("test_drawable", Vec3::new(1000.0, 2000.0, 30.0), 0.0), ("test_drawable", Vec3::new(1010.0, 2000.0, 30.0), 90.0), ("prop_nowhere", Vec3::new(1005.0, 2005.0, 30.0), 0.0)]);
+    write(&stream, "paleto_props.ymap", &ymap);
+    let (system, graphics) = minimal_ydr_sections(false);
+    write(&stream, "test_drawable.ydr", &build_rsc7(165, &system, &graphics));
+    let _ = rage_joaat("test_drawable");
+
+    let svg = dir.path().join("out.svg");
+    let out = ok(&["plot", dir.path().to_str().unwrap(), "--labels", "-o", svg.to_str().unwrap()]);
+    assert!(out.contains("3 entities"), "{out}");
+    assert!(out.contains("drawable tris"), "the folder model should be placed at its entities: {out}");
+    let text = std::fs::read_to_string(&svg).unwrap();
+    assert!(text.contains("3 entities from 1 ymap"), "{text}");
+    assert!(text.contains("props: 1 from folder, 1 unresolved"), "{text}");
+    assert!(text.contains("test_drawable"), "entity labels should name the archetype: {text}");
+    assert!(!text.contains("MLO-local"), "an exterior map is in world space already: {text}");
+
+    // The region framed is around the entities, not the model's own
+    // (1..9) coordinates near the origin.
+    let region_line = out.lines().find(|l| l.contains("region")).unwrap();
+    assert!(region_line.contains("99") || region_line.contains("100"), "{region_line}");
+}
+
+/// Without a model to hand, an entity is still a mark; `--no-props` keeps
+/// it that way even when a model is available.
+#[test]
+fn exterior_entities_are_marks_without_models() {
+    use rage_formats::ymap::tests::sample_exterior_ymap;
+    let dir = tempfile::tempdir().unwrap();
+    let ymap = write(dir.path(), "lonely.ymap", &sample_exterior_ymap("lonely", &[("prop_a", Vec3::new(10.0, 20.0, 30.0), 0.0)]));
+    let png = dir.path().join("out.png");
+    let out = ok(&["plot", &ymap, "--no-props", "-o", png.to_str().unwrap()]);
+    assert!(out.contains("1 entities"), "{out}");
+    assert!(out.contains("0 drawable tris"), "{out}");
+    assert!(png.is_file());
+}
