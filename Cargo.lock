@@ -660,7 +660,7 @@ checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 
 [[package]]
 name = "rage-cli"
-version = "0.17.3"
+version = "0.18.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -669,6 +669,7 @@ dependencies = [
  "log",
  "rage-formats",
  "rage-render",
+ "roxmltree",
  "rpf-archive",
  "sha2",
  "tempfile",
@@ -678,22 +679,23 @@ dependencies = [
 
 [[package]]
 name = "rage-formats"
-version = "0.1.0"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3a2b5980d9d7fa223226ce57da1d7847552bba0777e8adee3d407e05b3b93d5e"
+checksum = "0aaa8152bf929e355b61bc2eed29e367b21d6566b30c99317d6f54570e10a14d"
 dependencies = [
  "anyhow",
  "flate2",
  "image",
+ "json",
  "roxmltree",
  "texture2ddecoder",
 ]
 
 [[package]]
 name = "rage-render"
-version = "0.1.1"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "73b0160165b2378f937fb3a54706bc7b9b588b877511c4935600c1a7a3908939"
+checksum = "a6e10d2dd3986b7667ee5f0fc1ffde5e279ebe16f0a639b857f0dba76aee22f1"
 dependencies = [
  "anyhow",
  "console_error_panic_hook",
