@@ -107,7 +107,8 @@ enum Commands {
         depth: Option<usize>,
     },
 
-    /// Export textures from a .ytd/.ydr/.ydd/.yft as PNG/JPG/WebP (or DDS with --dds)
+    /// Export textures from a .ytd/.ydr/.ydd/.yft as PNG/JPG/WebP (or DDS with --dds);
+    /// `textures encode` makes DDS from images, `textures build` makes a .ytd
     #[command(alias = "ytd")]
     Textures(textures::TexturesArgs),
 

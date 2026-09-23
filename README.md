@@ -170,7 +170,9 @@ debug logging, `--no-update-check` to skip the daily release check.
 | `resource dump <file> [--archive RPF] [--json] [-o FILE] [--names FILE]...` | any Meta or PSO file (`.ymap` `.ytyp` `.ymt` `.ymf` `.pso`) as XML in CodeWalker's layout, or as JSON |
 | `resource rename <file> <name> [--from NAME] [-o FILE] [--dry-run]` | change a name inside a file in place: a `.ymap`'s own name (the default), or any hash field or XML value equal to `--from`, in Meta, PSO and XML files |
 | `names harvest \| fetch \| info \| lookup <term>...` | the hash-to-name list: build it from the game (`--exe` required), download a public one (`--build N` says what it covers), see where it is and which game build it covers, or hash a name / name a hash |
-| `textures <archive> <file> [-o DIR] [--format png\|jpg\|webp] [--sheet] [--max-size PX] [--dds]` | export a dictionary's textures, or the textures baked into a drawable, as images (alias `ytd`) |
+| `textures <archive> <file> [-o DIR] [--format png\|jpg\|webp] [--sheet] [--max-size PX] [--dds]` | export a dictionary's textures, or the textures baked into a drawable, as images (alias `ytd`); a loose `.ytd`/`.ydr`/`.ydd`/`.yft` needs no archive |
+| `textures encode <image\|dir\|glob>... [-o FILE\|DIR] [--format bc1\|bc3\|bc4\|bc5\|bc7\|rgba8] [--mips auto\|N]` | PNG/TGA/JPG/WebP/BMP to DDS with a full mip chain: BC5 for `*_n` normal maps, BC3 with alpha, BC1 otherwise |
+| `textures build <dds\|image\|dir\|glob>... -o FILE.ytd [--from FILE.ytd] [--format ...] [--mips ...]` | a texture dictionary from DDS files (stored as they are) and images (encoded); `--from` adds to or replaces entries of an existing one |
 
 ### Rendering
 
@@ -410,6 +412,30 @@ PNG is lossless and the best default. WebP output is lossless-only, JPEG
 drops the alpha channel, and `--max-size` caps the longest edge so files stay
 small. The old `ytd` command still works as an alias for `textures`, and
 `--dds` restores its original raw-DDS output.
+
+A loose resource on disk needs no archive: `rage ytd civic.ytd --dds`.
+
+### Make textures and texture dictionaries
+
+```sh
+rage textures encode lights.png                          # lights.dds, BC1 or BC3 by alpha, mips down to 4x4
+rage textures encode textures/ -o dds/ --format bc7      # a whole folder, one format
+rage ytd build dds/ -o civic.ytd                         # a dictionary from DDS and image files
+rage ytd build lights.png --from blista.ytd -o civic.ytd # start from a stock dictionary, add or replace by name
+```
+
+`encode` goes the other way from the export: an image becomes a DDS the
+game can use, with every mip level down to 4x4 the way vanilla textures
+ship (a single-level texture shimmers at distance). Without `--format` a
+name ending in `_n` gets BC5 (two channels, what the game uses for normal
+maps), anything with alpha gets BC3 and the rest BC1; `--format bc7` is the
+best quality at BC3's size. Block formats need sizes that are multiples of 4.
+
+`build` names each texture after its file stem, stores DDS inputs as they
+are and encodes images with the same options as `encode`. `--from` starts
+from an existing dictionary, so adding one texture to a copy of a stock
+`.ytd` is one command. The result reads back with `textures`, `resource info`
+and CodeWalker.
 
 ### Inspect a resource file
 
