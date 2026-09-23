@@ -97,17 +97,20 @@ impl GameIndex {
         let archives = ranked_archives(game_root, keys)?;
 
         let mut index = GameIndex::default();
-        for archive_path in &archives {
+        let total = archives.len();
+        for (n, archive_path) in archives.iter().enumerate() {
+            progress(n + 1, total, archive_path.strip_prefix(game_root).unwrap_or(archive_path));
             let archive = match Archive::open(archive_path, keys) {
                 Ok(a) => a,
-                Err(e) => { eprintln!("index: skipping {}: {}", archive_path.display(), e); continue; }
+                Err(e) => { eprintln!("\nindex: skipping {}: {}", archive_path.display(), e); continue; }
             };
             if archive.require_keys(keys).is_err() {
-                eprintln!("index: skipping {} (needs keys)", archive_path.display());
+                eprintln!("\nindex: skipping {} (needs keys)", archive_path.display());
                 continue;
             }
             index_archive(&archive, archive_path, &[], keys, &mut index);
         }
+        eprint!("\r{:<78}\r", "");
 
         Ok(index)
     }
@@ -260,16 +263,24 @@ impl GameIndex {
 
         let cache_path = GameIndex::cache_path(&exe_path);
 
+        let mut why = "missing".to_string();
         if let Some(path) = &cache_path
             && path.is_file()
         {
             match GameIndex::load_cached(path) {
                 Ok(index) => return Some(index),
-                Err(err) => eprintln!("game index cache at {} is invalid ({err}); rebuilding", path.display()),
+                Err(err) => why = format!("unreadable ({err})"),
             }
         }
 
-        println!("Building game index for {} (one-off; cached for next time)...", game_root.display());
+        // A build takes minutes with nothing else to show for it, so say
+        // what is happening, why, and how to avoid it next time.
+        let build = crate::keys::exe_version(&exe_path).and_then(|v| crate::keys::build_number(&v)).map_or(String::new(), |b| format!(" for game build {b}"));
+        println!(
+            "Texture index{build} is {why}; building it now — a one-off that takes a few minutes and is cached under {}.\n\
+             (`rage index build` does this ahead of time; `--no-index` skips it when the embedded and --ytd textures are enough.)",
+            cache_path.as_deref().and_then(Path::parent).map_or("~/.rage-cli/index".to_string(), |p| p.display().to_string()),
+        );
         let index = match GameIndex::build(&game_root, keys) {
             Ok(index) => index,
             Err(err) => { eprintln!("warning: failed to build game index: {err}"); return None; }
@@ -284,6 +295,14 @@ impl GameIndex {
 
         Some(index)
     }
+}
+
+/// One `\r`-overwritten stderr line per archive while the index is built.
+fn progress(n: usize, total: usize, archive: &Path) {
+    let name = archive.to_string_lossy().replace('\\', "/");
+    let label = if name.len() > 50 { format!("...{}", &name[name.len() - 47..]) } else { name };
+    eprint!("\r[{n:>3}/{total}] {label:<52}");
+    let _ = std::io::stderr().flush();
 }
 
 /// Sizes of each map in a [`GameIndex`], for `rpf index build`/`info` and

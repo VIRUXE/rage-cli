@@ -52,6 +52,42 @@ pub fn from_exe_cached(exe_path: &Path, cache_root: &Path) -> Result<(GtaKeys, b
     Ok((keys, false))
 }
 
+/// The game's version as its executable states it ("1.0.3889.0"); the
+/// third number is the build that FiveM's `sv_enforceGameBuild` names.
+/// Read from the PE version resource, which is plain UTF-16 in the file.
+pub fn exe_version(exe_path: &Path) -> Option<String> {
+    let data = std::fs::read(exe_path).ok()?;
+    version_in(&data)
+}
+
+/// The build number out of a version string: `1.0.3889.0` is build 3889.
+pub fn build_number(version: &str) -> Option<u32> {
+    version.split('.').nth(2)?.parse().ok()
+}
+
+/// The `ProductVersion` value of a Windows version resource: the UTF-16
+/// key, a NUL, alignment padding, then the NUL-terminated UTF-16 value.
+pub fn version_in(data: &[u8]) -> Option<String> {
+    let key: Vec<u8> = "ProductVersion".encode_utf16().flat_map(u16::to_le_bytes).collect();
+    let start = data.windows(key.len()).position(|w| w == key.as_slice())? + key.len();
+    let mut units = Vec::new();
+    let mut pos = start;
+    while pos + 1 < data.len() && units.len() < 32 {
+        let unit = u16::from_le_bytes([data[pos], data[pos + 1]]);
+        pos += 2;
+        if unit == 0 {
+            if units.is_empty() {
+                continue;
+            }
+            break;
+        }
+        units.push(unit);
+    }
+    let version = String::from_utf16(&units).ok()?;
+    let plausible = !version.is_empty() && version.chars().all(|c| c.is_ascii_digit() || c == '.') && version.contains('.');
+    plausible.then_some(version)
+}
+
 /// `<cache_root>/<size>-<mtime>` for the executable, or None when its
 /// metadata cannot be read (in which case nothing can be cached safely).
 fn cache_entry_for(exe_path: &Path, cache_root: &Path) -> Option<PathBuf> {
@@ -94,6 +130,19 @@ pub fn resolve_exe(path: &Path) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn version_is_read_from_the_resource_layout() {
+        let mut data = b"junk".to_vec();
+        data.extend("ProductVersion".encode_utf16().flat_map(u16::to_le_bytes));
+        data.extend_from_slice(&[0, 0, 0, 0]);
+        data.extend("1.0.3889.0".encode_utf16().flat_map(u16::to_le_bytes));
+        data.extend_from_slice(&[0, 0, b'D', 0]);
+        assert_eq!(version_in(&data).as_deref(), Some("1.0.3889.0"));
+        assert_eq!(build_number("1.0.3889.0"), Some(3889));
+        assert_eq!(build_number("3889"), None);
+        assert_eq!(version_in(b"no resource here"), None);
+    }
 
     #[test]
     fn cache_entry_name_is_size_and_mtime() {
