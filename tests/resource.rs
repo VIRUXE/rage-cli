@@ -9,6 +9,8 @@ fn rpf(args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_rage"))
         .args(args)
         .env("RAGE_NO_UPDATE_CHECK", "1")
+        // Whatever list this machine has harvested must not leak into the assertions.
+        .env("RAGE_NAMES", "nowhere/names.txt")
         .output()
         .expect("failed to run the rage binary")
 }
@@ -135,7 +137,9 @@ fn map_info_lists_header_and_entities() {
     use rage_formats::{ymap::tests::sample_exterior_ymap, Vec3};
     let tmp = tempfile::tempdir().unwrap();
     let file = write(tmp.path(), "paleto_props.ymap", &sample_exterior_ymap("paleto_props", &[("prop_gas_pump_1a", Vec3::new(197.263, 6573.081, 30.78), 20.0), ("prop_other", Vec3::new(1.0, 2.0, 3.0), 0.0)]));
-    // A sibling file names the second archetype.
+    // Sibling files name the archetypes (the first is a vanilla prop, but
+    // the harvested list is off in these tests).
+    write(tmp.path(), "prop_gas_pump_1a.ydr", b"");
     write(tmp.path(), "prop_other.ydr", b"");
 
     let out = ok(&["resource", "info", &file]);
@@ -204,4 +208,66 @@ fn meta_dump_of_a_ymap_names_every_member() {
     let output = rpf(&["resource", "dump", &file]);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!output.status.success() || stderr.contains("warning"), "{stderr}");
+}
+
+/// A map renamed in the file explorer keeps its old internal name; the
+/// game registers it under the new one, so nothing that names the old one
+/// binds any more. The check only applies to a file on disk.
+#[test]
+fn map_named_unlike_its_file_is_flagged() {
+    use rage_formats::{ymap::tests::sample_exterior_ymap, Vec3};
+    let tmp = tempfile::tempdir().unwrap();
+    let bytes = sample_exterior_ymap("map1", &[("prop_a", Vec3::new(1.0, 2.0, 3.0), 0.0)]);
+    let renamed = write(tmp.path(), "casas_praia_extras.ymap", &bytes);
+
+    let out = ok(&["resource", "info", &renamed]);
+    assert!(out.contains("Map:       hash_"), "map1 is nobody's sibling here: {out}");
+    assert!(out.contains("warning: the file is called casas_praia_extras but the map calls itself hash_"), "{out}");
+    assert!(out.contains("will not bind"), "{out}");
+    let json = ok(&["resource", "info", &renamed, "--json"]);
+    assert!(json.contains("\"file_name_mismatch\":\"casas_praia_extras\""), "{json}");
+
+    // The same bytes under the right name, in either case: no warning.
+    let right = write(tmp.path(), "MAP1.ymap", &bytes);
+    let out = ok(&["resource", "info", &right]);
+    assert!(!out.contains("warning"), "{out}");
+    let json = ok(&["resource", "info", &right, "--json"]);
+    assert!(json.contains("\"file_name_mismatch\":null"), "{json}");
+
+    // Inside an archive the lookup name is the file name by construction.
+    let mut builder = RpfBuilder::new(RpfEncryption::None);
+    builder.add_file("stream/casas_praia_extras.ymap", bytes);
+    let archive = write(tmp.path(), "test.rpf", &builder.build(None).unwrap());
+    let out = ok(&["resource", "info", "casas_praia_extras.ymap", "--archive", &archive]);
+    assert!(!out.contains("warning"), "{out}");
+}
+
+/// A manifest's imapName entries either name a .ymap next to it, a vanilla
+/// map (known to some list), or nothing at all — the last being a leftover.
+#[test]
+fn manifest_entries_with_no_map_beside_them_are_flagged() {
+    let tmp = tempfile::tempdir().unwrap();
+    let stream = tmp.path().join("stream");
+    std::fs::create_dir_all(&stream).unwrap();
+    let manifest = "<?xml version=\"1.0\"?><CPackFileMetaData><imapDependencies_2>\
+        <Item><imapName>bombapaleto</imapName><manifestFlags/><itypDepArray><Item>v_construction</Item></itypDepArray></Item>\
+        <Item><imapName>cs1_roads_pb_long_0</imapName><manifestFlags/><itypDepArray/></Item>\
+        <Item><imapName>map1</imapName><manifestFlags/><itypDepArray/></Item>\
+        </imapDependencies_2></CPackFileMetaData>";
+    let file = write(&stream, "_manifest.ymf", manifest.as_bytes());
+    write(&stream, "bombaPALETO.ymap", b"");
+    let vanilla = write(tmp.path(), "vanilla.txt", b"cs1_roads_pb_long_0\n");
+
+    let out = ok(&["resource", "info", &file, "--names", &vanilla]);
+    assert!(out.contains("  bombapaleto -> v_construction\n"), "a sibling, no note: {out}");
+    assert!(out.contains("cs1_roads_pb_long_0 -> -  (no such .ymap here; a vanilla map?)"), "{out}");
+    assert!(out.contains("map1 -> -  (no such .ymap here, and no list knows the name)"), "{out}");
+    assert!(out.contains("warning: 1 declared map(s) exist neither next to this manifest nor in any name list (map1)"), "{out}");
+
+    let json = ok(&["resource", "info", &file, "--json", "--names", &vanilla]);
+    assert!(json.contains("\"imaps_not_here\":[{\"name\":\"cs1_roads_pb_long_0\",\"known_name\":true},{\"name\":\"map1\",\"known_name\":false}]"), "{json}");
+
+    // Without the vanilla list, the road chunk is just as unknown as map1.
+    let out = ok(&["resource", "info", &file]);
+    assert!(out.contains("warning: 2 declared map(s)"), "{out}");
 }

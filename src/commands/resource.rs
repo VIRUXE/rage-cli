@@ -9,7 +9,7 @@ use anyhow::{bail, Context, Result};
 use std::path::{Path, PathBuf};
 
 use rage_formats::{
-    dump_meta, dump_metadata, parse_drawables, parse_ymap, parse_ymf, parse_ytd, parse_ytyp, prepare_rsc7,
+    dump_meta, dump_metadata, parse_drawables, parse_ymap, parse_ymf, parse_ytd, parse_ytyp, prepare_rsc7, rage_joaat,
     resource_size_from_flags, resource_version_from_flags, to_json, to_xml, DrawableEntry, DrawableKind, Manifest,
     MetaContainer, MetaDump, NameTable, Vec3, Ymap, YmapEntity, YmapHeader, Ytyp, YtdTexture, RSC7_MAGIC, RSC8_MAGIC,
 };
@@ -161,7 +161,7 @@ pub fn parse_header(data: &[u8]) -> Result<Rsc7Header> {
 
 /// What the body was parsed as, keyed off the file extension and, failing
 /// that, the container.
-enum Contents {
+pub enum Contents {
     Textures(Vec<YtdTexture>),
     Drawables(Vec<DrawableEntry>),
     Map(Ymap),
@@ -226,16 +226,82 @@ fn run_info(args: &InfoArgs, keys: Option<&GtaKeys>, verbose: bool) -> Result<()
     let data = load_resource_bytes(&args.file, args.archive.as_deref(), keys)?;
     let container = detect(&data).with_context(|| format!("'{}'", args.file))?;
     let contents = parse_contents(&args.file, &data, &container)?;
-    let names = crate::names::load(&args.names, local_path(&args.file, args.archive.as_deref()).as_deref())?;
+    let local = local_path(&args.file, args.archive.as_deref());
+    let names = crate::names::load(&args.names, local.as_deref())?;
+    let checks = local.as_deref().map(|p| Checks::of(p, &contents, &args.names)).unwrap_or_default();
 
     let mut out = String::new();
     if args.json {
-        write_json(&mut out, args, &container, &contents, &names, verbose);
+        write_json(&mut out, args, &container, &contents, &names, &checks, verbose);
     } else {
-        write_text(&mut out, args, &container, &contents, &names, verbose);
+        write_text(&mut out, args, &container, &contents, &names, &checks, verbose);
     }
     print!("{out}");
     Ok(())
+}
+
+/// What a loose file on disk says about itself versus its surroundings.
+/// Neither check applies to an entry read out of an archive with
+/// `--archive`, where the lookup name and the file name are one thing.
+#[derive(Debug, Default, PartialEq)]
+pub struct Checks {
+    /// The `.ymap`'s internal `CMapData.name` is not the file's stem, so
+    /// parent links and manifest `imapName` entries that use the internal
+    /// name will never bind to the map the game registers under the file
+    /// name. Holds the stem the game will use.
+    pub map_name_mismatch: Option<String>,
+    /// Manifest `imapName` entries with no `.ymap` of that name next to the
+    /// manifest: either vanilla maps (the common case for a resource that
+    /// edits base-game maps) or leftovers from a map since renamed or
+    /// removed. Each is paired with whether any known name list (built-in,
+    /// harvested, `--names`; not the siblings) has the name — when none
+    /// does, it is most likely a leftover.
+    pub orphan_imaps: Vec<(String, bool)>,
+}
+
+impl Checks {
+    pub fn of(path: &Path, contents: &Contents, extra: &[PathBuf]) -> Self {
+        let mut checks = Self::default();
+        let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+        match contents {
+            Contents::Map(ymap) => {
+                let h = ymap.header.name_hash;
+                if !stem.is_empty() && h != rage_joaat(stem) && h != rage_joaat(&stem.to_lowercase()) {
+                    checks.map_name_mismatch = Some(stem.to_owned());
+                }
+            }
+            Contents::Manifest(m) => {
+                let sibling_maps: std::collections::HashSet<u32> = path
+                    .parent()
+                    .and_then(|dir| crate::utils::walkdir(dir).ok())
+                    .unwrap_or_default()
+                    .iter()
+                    .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("ymap")))
+                    .filter_map(|p| p.file_stem().and_then(|s| s.to_str()))
+                    .flat_map(|s| [rage_joaat(s), rage_joaat(&s.to_lowercase())])
+                    .collect();
+                let known = crate::names::load(extra, None).unwrap_or_else(|_| NameTable::core());
+                for dep in &m.imap_dependencies_2 {
+                    let hash = match &dep.name.name {
+                        Some(n) => rage_joaat(n),
+                        None => dep.name.hash,
+                    };
+                    if sibling_maps.contains(&hash) {
+                        continue;
+                    }
+                    let label = dep.name.name.clone().unwrap_or_else(|| known.resolve(hash).into_owned());
+                    checks.orphan_imaps.push((label, known.get(hash).is_some()));
+                }
+            }
+            _ => {}
+        }
+        checks
+    }
+
+    /// The manifest entries that no list names at all.
+    fn unknown_imaps(&self) -> Vec<&str> {
+        self.orphan_imaps.iter().filter(|(_, known)| !known).map(|(n, _)| n.as_str()).collect()
+    }
 }
 
 fn run_dump(args: &DumpArgs, keys: Option<&GtaKeys>) -> Result<()> {
@@ -308,7 +374,7 @@ fn is_finite_box(lo: Vec3, hi: Vec3) -> bool {
 
 // ─── text ────────────────────────────────────────────────────────────────────
 
-fn write_text(out: &mut String, args: &InfoArgs, container: &Container, contents: &Contents, names: &NameTable, verbose: bool) {
+fn write_text(out: &mut String, args: &InfoArgs, container: &Container, contents: &Contents, names: &NameTable, checks: &Checks, verbose: bool) {
     use std::fmt::Write;
 
     match &args.archive {
@@ -343,9 +409,9 @@ fn write_text(out: &mut String, args: &InfoArgs, container: &Container, contents
                 write_drawable(out, entry, verbose);
             }
         }
-        Contents::Map(ymap) => write_map(out, ymap, names, args.limit),
+        Contents::Map(ymap) => write_map(out, ymap, names, checks, args.limit),
         Contents::Types(ytyp) => write_types(out, ytyp, names, args.limit),
-        Contents::Manifest(manifest) => write_manifest(out, manifest, names),
+        Contents::Manifest(manifest) => write_manifest(out, manifest, names, checks),
         Contents::Meta(dump) => {
             let root = dump.root.as_struct().map(|s| names.resolve(s.type_hash).into_owned()).unwrap_or_else(|| "?".into());
             let fields = dump.root.as_struct().map_or(0, |s| s.fields.len());
@@ -357,11 +423,16 @@ fn write_text(out: &mut String, args: &InfoArgs, container: &Container, contents
     }
 }
 
-fn write_map(out: &mut String, ymap: &Ymap, names: &NameTable, limit: usize) {
+fn write_map(out: &mut String, ymap: &Ymap, names: &NameTable, checks: &Checks, limit: usize) {
     use std::fmt::Write;
     let h = &ymap.header;
     let parent = if h.parent_hash == 0 { "-".to_string() } else { names.resolve(h.parent_hash).into_owned() };
     writeln!(out, "Map:       {}  parent {parent}", names.resolve(h.name_hash)).unwrap();
+    if let Some(stem) = &checks.map_name_mismatch {
+        let internal = names.resolve(h.name_hash);
+        writeln!(out, "           warning: the file is called {stem} but the map calls itself {internal} (0x{:08X}); the game registers it as {stem},", h.name_hash).unwrap();
+        writeln!(out, "           so parent links and _manifest.ymf imapName entries that say {internal} will not bind (renamed outside CodeWalker?)").unwrap();
+    }
     writeln!(out, "Flags:     0x{:X} {}  content 0x{:X} {}", h.flags, header_flag_names(h.flags).join("|"), h.content_flags, h.content_flag_names().join("|")).unwrap();
     if is_finite_box(h.streaming_extents_min, h.streaming_extents_max) {
         writeln!(out, "Streaming: {}..{}", fmt_vec3(h.streaming_extents_min), fmt_vec3(h.streaming_extents_max)).unwrap();
@@ -424,7 +495,7 @@ fn write_types(out: &mut String, ytyp: &Ytyp, names: &NameTable, limit: usize) {
     }
 }
 
-fn write_manifest(out: &mut String, m: &Manifest, names: &NameTable) {
+fn write_manifest(out: &mut String, m: &Manifest, names: &NameTable, checks: &Checks) {
     use std::fmt::Write;
     let name = |h: &rage_formats::HashName| match &h.name {
         Some(n) => n.clone(),
@@ -439,7 +510,23 @@ fn write_manifest(out: &mut String, m: &Manifest, names: &NameTable) {
         writeln!(out, "Map dependencies ({}):", m.imap_dependencies_2.len()).unwrap();
         for d in &m.imap_dependencies_2 {
             let flags = if d.manifest_flags & 1 != 0 { " [INTERIOR_DATA]" } else { "" };
-            writeln!(out, "  {}{flags} -> {}", name(&d.name), if d.ityp_deps.is_empty() { "-".to_string() } else { list(&d.ityp_deps) }).unwrap();
+            let n = name(&d.name);
+            let note = match checks.orphan_imaps.iter().find(|(o, _)| *o == n) {
+                Some((_, true)) => "  (no such .ymap here; a vanilla map?)",
+                Some((_, false)) => "  (no such .ymap here, and no list knows the name)",
+                None => "",
+            };
+            writeln!(out, "  {n}{flags} -> {}{note}", if d.ityp_deps.is_empty() { "-".to_string() } else { list(&d.ityp_deps) }).unwrap();
+        }
+        let unknown = checks.unknown_imaps();
+        if !unknown.is_empty() {
+            writeln!(
+                out,
+                "           warning: {} declared map(s) exist neither next to this manifest nor in any name list ({}); a leftover from a map since renamed or removed?",
+                unknown.len(),
+                unknown.join(", ")
+            )
+            .unwrap();
         }
     }
     if !m.ityp_dependencies_2.is_empty() {
@@ -546,7 +633,7 @@ fn write_drawable(out: &mut String, entry: &DrawableEntry, verbose: bool) {
 
 // ─── json ────────────────────────────────────────────────────────────────────
 
-fn write_json(out: &mut String, args: &InfoArgs, container: &Container, contents: &Contents, names: &NameTable, verbose: bool) {
+fn write_json(out: &mut String, args: &InfoArgs, container: &Container, contents: &Contents, names: &NameTable, checks: &Checks, verbose: bool) {
     use std::fmt::Write;
 
     let (kind, body) = match contents {
@@ -556,9 +643,9 @@ fn write_json(out: &mut String, args: &InfoArgs, container: &Container, contents
             let items: Vec<String> = entries.iter().map(|e| json_drawable(e, verbose)).collect();
             ("drawables", format!(",\"drawables\":[{}]", items.join(",")))
         }
-        Contents::Map(ymap) => ("map", format!(",\"map\":{}", json_map(ymap, names).dump())),
+        Contents::Map(ymap) => ("map", format!(",\"map\":{}", json_map(ymap, names, checks).dump())),
         Contents::Types(ytyp) => ("types", format!(",\"types\":{}", json_types(ytyp, names).dump())),
-        Contents::Manifest(m) => ("manifest", format!(",\"manifest\":{}", json_manifest(m, names).dump())),
+        Contents::Manifest(m) => ("manifest", format!(",\"manifest\":{}", json_manifest(m, names, checks).dump())),
         Contents::Meta(dump) => ("meta", format!(",\"meta\":{}", to_json(&dump.root, names).dump())),
     };
 
@@ -590,7 +677,7 @@ fn json_name(hash: u32, names: &NameTable) -> json::JsonValue {
     }
 }
 
-fn json_map(ymap: &Ymap, names: &NameTable) -> json::JsonValue {
+fn json_map(ymap: &Ymap, names: &NameTable, checks: &Checks) -> json::JsonValue {
     let h = &ymap.header;
     let entities: Vec<json::JsonValue> = ymap
         .entities
@@ -630,6 +717,7 @@ fn json_map(ymap: &Ymap, names: &NameTable) -> json::JsonValue {
     json::object! {
         name: json_name(h.name_hash, names),
         name_hash: format!("0x{:08X}", h.name_hash),
+        file_name_mismatch: checks.map_name_mismatch.as_deref().map_or(json::JsonValue::Null, json::JsonValue::from),
         parent: json_name(h.parent_hash, names),
         flags: h.flags,
         flag_names: header_flag_names(h.flags),
@@ -674,7 +762,7 @@ fn json_types(ytyp: &Ytyp, names: &NameTable) -> json::JsonValue {
     json::object! { archetypes: archetypes, mlos: mlos }
 }
 
-fn json_manifest(m: &Manifest, names: &NameTable) -> json::JsonValue {
+fn json_manifest(m: &Manifest, names: &NameTable, checks: &Checks) -> json::JsonValue {
     let name = |h: &rage_formats::HashName| match &h.name {
         Some(n) => json::JsonValue::from(n.as_str()),
         None => json_name(h.hash, names),
@@ -683,10 +771,12 @@ fn json_manifest(m: &Manifest, names: &NameTable) -> json::JsonValue {
     let deps = |v: &[rage_formats::Dependencies]| {
         v.iter().map(|d| json::object! { name: name(&d.name), manifest_flags: d.manifest_flags, ityp_deps: list(&d.ityp_deps) }).collect::<Vec<_>>()
     };
+    let orphan = |(n, known): &(String, bool)| json::object! { name: n.as_str(), known_name: *known };
     json::object! {
         map_data_groups: m.map_data_groups.iter().map(|g| json::object! { name: name(&g.name), flags: g.flags, hours_on_off: g.hours_on_off, bounds: list(&g.bounds), weather_types: list(&g.weather_types) }).collect::<Vec<_>>(),
         imap_dependencies: m.imap_dependencies.iter().map(|d| json::object! { imap: name(&d.imap), ityp: name(&d.ityp), pack_file: name(&d.pack_file) }).collect::<Vec<_>>(),
         imap_dependencies_2: deps(&m.imap_dependencies_2),
+        imaps_not_here: checks.orphan_imaps.iter().map(orphan).collect::<Vec<_>>(),
         ityp_dependencies_2: deps(&m.ityp_dependencies_2),
         hd_txd_bindings: m.hd_txd_bindings.iter().map(|b| json::object! { asset_type: name(&b.asset_type), target_asset: b.target_asset.as_str(), hd_txd: b.hd_txd.as_str() }).collect::<Vec<_>>(),
         interiors: m.interiors.iter().map(|i| json::object! { name: name(&i.name), bounds: list(&i.bounds) }).collect::<Vec<_>>(),
