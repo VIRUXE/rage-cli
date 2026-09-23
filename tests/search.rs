@@ -130,6 +130,26 @@ fn json_and_directory_mode() {
     assert_eq!(lines(&out).len(), 1, "{out}");
 }
 
+/// The usage line says `<PATH> <PATTERN>`, but a glob is never a path, so
+/// the `rg`-style `<PATTERN> <PATH>` order works too.
+#[test]
+fn pattern_may_come_before_the_path() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (outer, _) = fixture(tmp.path());
+
+    let out = ok(&["search", "*.ydr", &outer]);
+    assert_eq!(lines(&out).len(), 2, "{out}");
+    assert_eq!(out, ok(&["search", &outer, "*.ydr"]));
+
+    let dir = tmp.path().to_str().unwrap();
+    let out = ok(&["search", "prop_c.ydr", dir]);
+    assert_eq!(lines(&out).len(), 1, "{out}");
+
+    let help = ok(&["search", "--help"]);
+    assert!(help.contains("<PATH> <PATTERN|"), "usage puts the path first:
+{help}");
+}
+
 #[test]
 fn a_filter_is_required() {
     let tmp = tempfile::tempdir().unwrap();

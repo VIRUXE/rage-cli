@@ -9,8 +9,10 @@ use crate::utils::{json_string, matches_pattern};
 
 #[derive(clap::Args)]
 #[command(group = clap::ArgGroup::new("filter").required(true).multiple(true))]
+#[command(override_usage = "rage search [OPTIONS] <PATH> <PATTERN|--content <TEXT>|--hex <BYTES>|--hash <JOAAT>>")]
 pub struct SearchArgs {
-    /// An .rpf archive, or a directory to scan for .rpf archives
+    /// An .rpf archive, or a directory to scan for .rpf archives (either
+    /// order works: whichever of the two positionals exists on disk is the path)
     pub path: PathBuf,
 
     /// Name/path pattern (e.g. "*.ydr", "*icons.rpf/*", "prop_mk_arrow_3d.ydr")
@@ -110,9 +112,20 @@ impl Sink {
     }
 }
 
+/// The two positionals in the order they were meant: `rg`/`grep` habits put
+/// the pattern first, and a glob is never a path on disk, so when only the
+/// second one exists it is the path.
+pub(crate) fn positionals(path: &Path, pattern: Option<&str>) -> (PathBuf, Option<String>) {
+    match pattern {
+        Some(p) if !path.exists() && Path::new(p).exists() => (PathBuf::from(p), Some(path.to_string_lossy().into_owned())),
+        _ => (path.to_path_buf(), pattern.map(str::to_owned)),
+    }
+}
+
 pub fn run(args: &SearchArgs, keys: Option<&GtaKeys>) -> Result<()> {
+    let (path, pattern) = positionals(&args.path, args.pattern.as_deref());
     let filters = Filters {
-        pattern: args.pattern.as_ref().map(|p| p.replace('\\', "/").to_lowercase()),
+        pattern: pattern.as_ref().map(|p| p.replace('\\', "/").to_lowercase()),
         content: args.content.as_ref().map(|c| {
             if args.ignore_case { c.to_ascii_lowercase().into_bytes() } else { c.clone().into_bytes() }
         }),
@@ -121,9 +134,9 @@ pub fn run(args: &SearchArgs, keys: Option<&GtaKeys>) -> Result<()> {
         ignore_case: args.ignore_case,
     };
 
-    let archives = collect_archives(&args.path)?;
+    let archives = collect_archives(&path)?;
     if archives.is_empty() {
-        bail!("no .rpf archives found under {}", args.path.display());
+        bail!("no .rpf archives found under {}", path.display());
     }
 
     let mut sink = Sink {
@@ -375,6 +388,21 @@ mod tests {
         assert_eq!(find_bytes(b"xxneedlexxneedle", b"needle"), Some(2));
         assert_eq!(find_bytes(b"short", b"longer needle"), None);
         assert_eq!(find_bytes(b"abc", b""), None);
+    }
+
+    #[test]
+    fn positionals_swap_when_only_the_second_is_on_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let here = dir.path().to_path_buf();
+        let (p, pat) = positionals(Path::new("*.ydr"), Some(here.to_str().unwrap()));
+        assert_eq!((p, pat.as_deref()), (here.clone(), Some("*.ydr")));
+        let (p, pat) = positionals(&here, Some("*.ydr"));
+        assert_eq!((p, pat.as_deref()), (here.clone(), Some("*.ydr")));
+        // Neither on disk: left alone, so the usual "does not exist" error names the path.
+        let (p, pat) = positionals(Path::new("nope"), Some("*.ydr"));
+        assert_eq!((p, pat.as_deref()), (PathBuf::from("nope"), Some("*.ydr")));
+        let (p, pat) = positionals(&here, None);
+        assert_eq!((p, pat), (here, None));
     }
 
     #[test]
