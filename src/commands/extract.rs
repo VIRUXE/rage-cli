@@ -3,7 +3,7 @@ use std::{cell::Cell, fs, io::{self, Write}, path::{Path, PathBuf}};
 use crate::rpf::{Archive, FileRef, GtaKeys};
 use crate::utils::matches_pattern;
 
-pub fn run(archive_path: &Path, output_dir: Option<&Path>, pattern: Option<&str>, recursive: bool, keys: Option<&GtaKeys>) -> Result<()> {
+pub fn run(archive_path: &Path, output_dir: Option<&Path>, patterns: &[String], recursive: bool, keys: Option<&GtaKeys>) -> Result<()> {
     let archive = Archive::open(archive_path, keys)?;
     archive.require_keys(keys)?;
 
@@ -27,24 +27,12 @@ pub fn run(archive_path: &Path, output_dir: Option<&Path>, pattern: Option<&str>
 
         let ok = Cell::new(0usize);
         let fail = Cell::new(0usize);
-        extract_recursive(&archive, "", &output_path, pattern, keys, &ok, &fail, 0);
+        extract_recursive(&archive, "", &output_path, patterns, keys, &ok, &fail, 0);
         println!("\n\nExtracted: {} / {}  Failed: {}", ok.get(), total_files, fail.get());
         return Ok(());
     }
 
-    let all_files = archive.list_files();
-    let to_extract: Vec<&FileRef> = if let Some(pat) = pattern {
-        if !pat.contains('*') && !pat.contains('?') {
-            match archive.find_file(pat) {
-                Some(f) => vec![f],
-                None    => { println!("File not found: {}", pat); return Ok(()); }
-            }
-        } else {
-            all_files.into_iter().filter(|f| matches_pattern(&f.path, pat)).collect()
-        }
-    } else {
-        all_files
-    };
+    let to_extract = select(&archive, patterns);
 
     if to_extract.is_empty() {
         println!("No files to extract");
@@ -77,6 +65,40 @@ pub fn run(archive_path: &Path, output_dir: Option<&Path>, pattern: Option<&str>
 
     println!("\n\nExtracted: {}  Failed: {}", ok, fail);
     Ok(())
+}
+
+/// The entries the patterns name, in archive order and each once: every
+/// file when there is no pattern; otherwise the union of the matches, an
+/// exact path per wildcard-free pattern (missing ones are reported and
+/// skipped) and every path a glob matches.
+fn select<'a>(archive: &'a Archive, patterns: &[String]) -> Vec<&'a FileRef> {
+    let all_files = archive.list_files();
+    if patterns.is_empty() {
+        return all_files;
+    }
+    let mut chosen: Vec<&FileRef> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for pat in patterns {
+        let matches: Vec<&FileRef> = if !pat.contains('*') && !pat.contains('?') {
+            match archive.find_file(pat) {
+                Some(f) => vec![f],
+                None    => { println!("File not found: {}", pat); Vec::new() }
+            }
+        } else {
+            all_files.iter().copied().filter(|f| matches_pattern(&f.path, pat)).collect()
+        };
+        for f in matches {
+            if seen.insert(f.path.clone()) {
+                chosen.push(f);
+            }
+        }
+    }
+    chosen
+}
+
+/// True when any pattern matches `path`, or there are none.
+fn wanted(path: &str, patterns: &[String]) -> bool {
+    patterns.is_empty() || patterns.iter().any(|p| matches_pattern(path, p))
 }
 
 /// Recursively count leaf files, resources and nested archives without extracting any
@@ -116,7 +138,7 @@ fn extract_recursive(
     archive: &Archive,
     prefix: &str,
     output_path: &Path,
-    pattern: Option<&str>,
+    patterns: &[String],
     keys: Option<&GtaKeys>,
     ok: &Cell<usize>,
     fail: &Cell<usize>,
@@ -151,7 +173,7 @@ fn extract_recursive(
         if file.name.to_lowercase().ends_with(".rpf") {
             // Nested archive: parse the extracted bytes and recurse under its full path.
             match Archive::from_bytes(data, &file.name, keys) {
-                Ok(nested) => extract_recursive(&nested, &full, output_path, pattern, keys, ok, fail, depth + 1),
+                Ok(nested) => extract_recursive(&nested, &full, output_path, patterns, keys, ok, fail, depth + 1),
                 Err(e) => {
                     eprintln!("\nFailed to parse nested {}: {}", full, e);
                     fail.set(fail.get() + 1);
@@ -160,9 +182,7 @@ fn extract_recursive(
             continue;
         }
 
-        if let Some(pat) = pattern {
-            if !matches_pattern(&full, pat) { continue; }
-        }
+        if !wanted(&full, patterns) { continue; }
 
         let dest = output_path.join(&full);
         if let Some(parent) = dest.parent() {

@@ -77,8 +77,10 @@ enum Commands {
         #[arg(short, long, value_name = "DIR")]
         output: Option<PathBuf>,
 
-        /// Specific file or pattern to extract
-        pattern: Option<String>,
+        /// Files or patterns to extract; several may be given and the
+        /// archive is opened once for all of them
+        #[arg(value_name = "PATTERN")]
+        patterns: Vec<String>,
 
         /// Recurse into nested RPF archives, extracting them to loose files
         /// (resource files get a valid RSC7 header, like CodeWalker)
@@ -197,7 +199,7 @@ fn dispatch(command: Commands, keys: Option<&GtaKeys>, exe: Option<&Path>, verbo
     match command {
         Commands::Info        { archive }                    => info::run(&archive, keys),
         Commands::List        { archive, pattern, detailed } => list::run(&archive, pattern.as_deref(), detailed, keys),
-        Commands::Extract     { archive, output, pattern, recursive } => extract::run(&archive, output.as_deref(), pattern.as_deref(), recursive, keys),
+        Commands::Extract     { archive, output, patterns, recursive } => extract::run(&archive, output.as_deref(), &patterns, recursive, keys),
         Commands::Search(args)                               => search::run(&args, keys),
         Commands::Verify      { archive }                    => verify::run(&archive, keys),
         Commands::Tree        { archive, depth }             => tree::run(&archive, depth, keys),
