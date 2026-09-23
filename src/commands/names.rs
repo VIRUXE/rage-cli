@@ -2,17 +2,25 @@
 //! dump` print through. `harvest` builds it from the game's own files —
 //! every archive entry's stem (archetype, map, dictionary and collision
 //! names) and every element, attribute and value of the plain-text XML
-//! metadata the game ships — so no outside list is needed; `lookup` answers
-//! what a hash or a name is; `info` says what is on disk.
+//! metadata the game ships — so no outside list is needed; `fetch` pulls a
+//! public list into the same place for machines with no game install;
+//! `lookup` answers what a hash or a name is; `info` says what is on disk
+//! and which game build it covers.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use rage_formats::{rage_joaat, NameTable};
 
 use crate::index::ranked_archives;
+use crate::names::{read_list, today, write_list, ListHeader};
 use crate::rpf::{Archive, GtaKeys};
+
+/// A public, one-name-per-line dump of the game's archetype names,
+/// maintained by the community; what `fetch` reads without `--url`.
+pub const DEFAULT_LIST_URL: &str = "https://raw.githubusercontent.com/DurtyFree/gta-v-data-dumps/master/ObjectList.ini";
 
 #[derive(clap::Args)]
 pub struct NamesArgs {
@@ -24,7 +32,9 @@ pub struct NamesArgs {
 pub enum NamesCommand {
     /// Scan the game's archives for names and write the list (--exe required)
     Harvest(HarvestArgs),
-    /// Where the list is and how many names it holds
+    /// Download a public name list into the same place, no game install needed
+    Fetch(FetchArgs),
+    /// Where the list is, how many names it holds and which game build it covers
     Info,
     /// Print the hash of each name given, or the name of each 0x hash
     Lookup {
@@ -44,9 +54,30 @@ pub struct HarvestArgs {
     pub output: Option<PathBuf>,
 }
 
+#[derive(clap::Args)]
+pub struct FetchArgs {
+    /// Where to download the list from (one name per line, `#` comments allowed)
+    #[arg(long, value_name = "URL", default_value = DEFAULT_LIST_URL)]
+    pub url: String,
+
+    /// The game build the list is current to, recorded so `names info` and
+    /// `resource info` can say what the list covers
+    #[arg(long, value_name = "N")]
+    pub build: Option<u32>,
+
+    /// Write the list here instead of ~/.rage-cli/names.txt (or RAGE_NAMES)
+    #[arg(short, long, value_name = "FILE")]
+    pub output: Option<PathBuf>,
+
+    /// Replace the list on disk instead of adding to it
+    #[arg(long)]
+    pub replace: bool,
+}
+
 pub fn run(args: &NamesArgs, keys: Option<&GtaKeys>, exe: Option<&Path>) -> Result<()> {
     match &args.command {
         NamesCommand::Harvest(h) => harvest(h, keys, exe),
+        NamesCommand::Fetch(f) => fetch(f),
         NamesCommand::Info => info(),
         NamesCommand::Lookup { terms, names } => lookup(terms, names),
     }
@@ -58,16 +89,84 @@ fn info() -> Result<()> {
         return Ok(());
     };
     println!("Built-in names: {}", NameTable::core().len());
-    println!("Harvested list: {}", path.display());
+    println!("Name list:      {}", path.display());
     if path.is_file() {
-        let text = std::fs::read_to_string(&path)?;
-        let mut table = NameTable::empty();
-        let count = table.add_list(&text);
-        println!("Harvested names: {count}");
+        let (header, names) = read_list(&path)?;
+        println!("Names:          {}", names.len());
+        println!("Coverage:       {}", header.coverage());
+        if !header.sources.is_empty() {
+            println!("Sources:");
+            for s in &header.sources {
+                println!("  {s}");
+            }
+        }
     } else {
-        println!("Not harvested yet — run `rage names harvest --exe PATH`.");
+        println!("None yet — `rage names harvest --exe PATH` scans the game, `rage names fetch` downloads a public list.");
     }
     Ok(())
+}
+
+/// Where a new list goes, and what is already there to merge with.
+fn list_target(output: Option<&PathBuf>, replace: bool) -> Result<(PathBuf, ListHeader, BTreeSet<String>)> {
+    let path = match output {
+        Some(p) => p.clone(),
+        None => crate::names::harvest_path().context("no names directory available (no HOME/USERPROFILE?)")?,
+    };
+    if !replace && path.is_file() {
+        let (header, names) = read_list(&path)?;
+        Ok((path, header, names))
+    } else {
+        Ok((path, ListHeader::default(), BTreeSet::new()))
+    }
+}
+
+fn fetch(args: &FetchArgs) -> Result<()> {
+    let (path, mut header, mut names) = list_target(args.output.as_ref(), args.replace)?;
+    let before = names.len();
+
+    println!("Fetching {}...", args.url);
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .user_agent(concat!("rage-cli/", env!("CARGO_PKG_VERSION"), " (+https://github.com/VIRUXE/rage-cli)"))
+        .timeout_connect(Some(Duration::from_secs(10)))
+        .timeout_global(Some(Duration::from_secs(300)))
+        .http_status_as_error(false)
+        .build()
+        .into();
+    let mut res = agent.get(&args.url).call().with_context(|| format!("downloading {}", args.url))?;
+    if !res.status().is_success() {
+        bail!("downloading {} failed: HTTP {}", args.url, res.status());
+    }
+    let body = res.body_mut().with_config().limit(256 << 20).read_to_string().context("reading the list")?;
+    let fetched = add_fetched(&mut names, &body);
+    if fetched == 0 {
+        bail!("{} holds no names (expected one per line)", args.url);
+    }
+
+    let build = match args.build {
+        Some(b) => format!(" (build {b})"),
+        None => String::new(),
+    };
+    header.add_source(format!("fetch {} on {}{build}", args.url, today()), args.build);
+    write_list(&path, &header, &names)?;
+    println!("Wrote {} names to {} ({} new; the list {})", names.len(), path.display(), names.len() - before, header.coverage());
+    Ok(())
+}
+
+/// Adds the names of a downloaded list: one per line, trimmed, `#` and `;`
+/// comments and `[section]` lines skipped. Returns how many lines held a name.
+fn add_fetched(names: &mut BTreeSet<String>, body: &str) -> usize {
+    let mut count = 0;
+    for line in body.lines() {
+        let line = line.trim().trim_start_matches('\u{feff}');
+        if line.is_empty() || line.starts_with(['#', ';', '[']) {
+            continue;
+        }
+        count += 1;
+        if !names.contains(line) {
+            names.insert(line.to_owned());
+        }
+    }
+    count
 }
 
 fn lookup(terms: &[String], extra: &[PathBuf]) -> Result<()> {
@@ -90,10 +189,15 @@ fn harvest(args: &HarvestArgs, keys: Option<&GtaKeys>, exe: Option<&Path>) -> Re
     let exe = exe.context("--exe or GTAV_PATH is required for `rage names harvest`")?;
     let exe_path = crate::keys::resolve_exe(exe)?;
     let game_root = exe_path.parent().context("--exe has no parent directory")?.to_path_buf();
-    let output = match &args.output {
-        Some(p) => p.clone(),
-        None => crate::names::harvest_path().context("no names directory available (no HOME/USERPROFILE?)")?,
-    };
+    // A harvest supersedes whatever was fetched: the game's own files are
+    // the source of truth, and a fetched list may name things this build
+    // has not got. The previous sources stay in the header for the record.
+    let (output, mut header, _) = list_target(args.output.as_ref(), true)?;
+    if output.is_file() {
+        header = read_list(&output)?.0;
+    }
+    let version = crate::keys::exe_version(&exe_path);
+    let build = version.as_deref().and_then(crate::keys::build_number);
 
     println!("Harvesting names from {}...", game_root.display());
     let mut names = BTreeSet::new();
@@ -116,17 +220,12 @@ fn harvest(args: &HarvestArgs, keys: Option<&GtaKeys>, exe: Option<&Path>) -> Re
         bail!("no names found under {}", game_root.display());
     }
 
-    let mut text = String::with_capacity(names.len() * 24);
-    text.push_str("# Names harvested from the game's own files by `rage names harvest`.\n");
-    for n in &names {
-        text.push_str(n);
-        text.push('\n');
-    }
-    if let Some(dir) = output.parent() {
-        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
-    }
-    std::fs::write(&output, text).with_context(|| format!("writing {}", output.display()))?;
-    println!("Wrote {} names to {}", names.len(), output.display());
+    header.add_source(
+        format!("harvest {} {} on {}", exe_path.display(), version.as_deref().unwrap_or("(version unknown)"), today()),
+        build,
+    );
+    write_list(&output, &header, &names)?;
+    println!("Wrote {} names to {} (the list {})", names.len(), output.display(), header.coverage());
     Ok(())
 }
 
@@ -218,6 +317,14 @@ mod tests {
         assert!(!out.contains("true"));
         assert!(!out.contains("-2"));
         assert!(!out.contains("x"), "one-letter attribute names are not worth a line");
+    }
+
+    #[test]
+    fn fetched_lists_skip_comments_and_ini_sections() {
+        let mut names = BTreeSet::new();
+        let n = add_fetched(&mut names, "\u{feff}# a comment\n[Objects]\nprop_a\n prop_b \n; another\n\nprop_a\n");
+        assert_eq!(n, 3);
+        assert_eq!(names.into_iter().collect::<Vec<_>>(), ["prop_a", "prop_b"]);
     }
 
     #[test]

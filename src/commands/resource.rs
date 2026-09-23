@@ -235,9 +235,29 @@ fn run_info(args: &InfoArgs, keys: Option<&GtaKeys>, verbose: bool) -> Result<()
         write_json(&mut out, args, &container, &contents, &names, &checks, verbose);
     } else {
         write_text(&mut out, args, &container, &contents, &names, &checks, verbose);
+        if let Some(note) = unresolved_note(&out) {
+            out.push_str(&note);
+        }
     }
     print!("{out}");
     Ok(())
+}
+
+/// A closing line when the text left `hash_XXXXXXXX` placeholders behind:
+/// how many, what the active list covers, and that an absent name may be
+/// newer than the list rather than missing from the game.
+pub fn unresolved_note(text: &str) -> Option<String> {
+    let count = text.match_indices("hash_").filter(|(i, _)| text[i + 5..].chars().take(8).all(|c| c.is_ascii_hexdigit()) && text[i + 5..].len() >= 8).count();
+    if count == 0 {
+        return None;
+    }
+    let list = match crate::names::harvested_header() {
+        Some(h) => format!("the name list {}", h.coverage()),
+        None => "there is no name list yet (`rage names fetch` needs no game install; `rage names harvest --exe` scans one)".to_owned(),
+    };
+    Some(format!(
+        "Unresolved: {count} hash(es) with no known name; {list}. A name absent from a list older than the file is not proof the asset does not exist.\n"
+    ))
 }
 
 /// What a loose file on disk says about itself versus its surroundings.
@@ -320,10 +340,13 @@ fn run_dump(args: &DumpArgs, keys: Option<&GtaKeys>) -> Result<()> {
     let text = if args.json { to_json(&dump.root, &names).pretty(2) + "\n" } else { to_xml(&dump.root, &names) };
     match &args.output {
         Some(path) => {
-            std::fs::write(path, text).with_context(|| format!("writing {}", path.display()))?;
+            std::fs::write(path, &text).with_context(|| format!("writing {}", path.display()))?;
             eprintln!("Wrote {}", path.display());
         }
         None => print!("{text}"),
+    }
+    if let Some(note) = unresolved_note(&text) {
+        eprint!("{note}");
     }
     Ok(())
 }
@@ -916,6 +939,13 @@ mod tests {
         // A stored +90° about z is a -90° heading in the world.
         assert!((entity_yaw_degrees(&e([0.0, 0.0, h, h])) + 90.0).abs() < 1e-3);
         assert!((entity_yaw_degrees(&e([0.0, 0.0, -0.17364818, 0.9848077])) - 20.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn unresolved_note_counts_placeholders_only() {
+        assert!(unresolved_note("Map: paleto_props\n").is_none());
+        let note = unresolved_note("Map: hash_AEC13995\n  hash_4FD621BC x\n  hash_not_one\n").unwrap();
+        assert!(note.starts_with("Unresolved: 2 hash(es)"), "{note}");
     }
 
     #[test]
