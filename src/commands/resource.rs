@@ -3,13 +3,14 @@
 //! container header and a summary of what the file holds — textures,
 //! drawables, a map's entities, a type file's archetypes, a manifest's
 //! dependencies. `dump` writes any Meta or PSO file out whole, as XML in
-//! CodeWalker's layout or as JSON.
+//! CodeWalker's layout or as JSON. `rename` changes a name inside a file
+//! — a map's own name, a manifest's imapName — without rewriting the rest.
 
 use anyhow::{bail, Context, Result};
 use std::path::{Path, PathBuf};
 
 use rage_formats::{
-    dump_meta, dump_metadata, parse_drawables, parse_ymap, parse_ymf, parse_ytd, parse_ytyp, prepare_rsc7, rage_joaat,
+    dump_meta, dump_metadata, parse_drawables, parse_ymap, parse_ymf, parse_ytd, parse_ytyp, prepare_rsc7, rage_joaat, set_map_name,
     resource_size_from_flags, resource_version_from_flags, to_json, to_xml, DrawableEntry, DrawableKind, Manifest,
     MetaContainer, MetaDump, NameTable, Vec3, Ymap, YmapEntity, YmapHeader, Ytyp, YtdTexture, RSC7_MAGIC, RSC8_MAGIC,
 };
@@ -30,6 +31,35 @@ pub enum ResourceCommand {
     Info(InfoArgs),
     /// Write a Meta or PSO file (.ymap .ytyp .ymt .ymf .pso) out as XML or JSON
     Dump(DumpArgs),
+    /// Change a name inside a .ymap (its own name), a .ymf or any Meta/PSO/XML file, in place
+    Rename(RenameArgs),
+}
+
+#[derive(clap::Args)]
+pub struct RenameArgs {
+    /// A loose .ymap, .ytyp, .ymt, .ymf, .pso or XML file on disk
+    pub file: PathBuf,
+
+    /// The new name (hashed lowercase, as the game hashes asset names)
+    pub name: String,
+
+    /// The name (or 0x hash) to replace, wherever a hash field holds it;
+    /// without it a .ymap gets NAME as its own CMapData.name, and any
+    /// other file needs it
+    #[arg(long, value_name = "NAME")]
+    pub from: Option<String>,
+
+    /// Also set a .ymap's parent map (only without --from)
+    #[arg(long, value_name = "NAME", conflicts_with = "from")]
+    pub parent: Option<String>,
+
+    /// Write here instead of over the input
+    #[arg(short, long, value_name = "FILE")]
+    pub output: Option<PathBuf>,
+
+    /// Report what would change and write nothing
+    #[arg(long)]
+    pub dry_run: bool,
 }
 
 #[derive(clap::Args)]
@@ -214,7 +244,107 @@ pub fn run(args: &ResourceArgs, keys: Option<&GtaKeys>, verbose: bool) -> Result
     match &args.command {
         ResourceCommand::Info(info) => run_info(info, keys, verbose),
         ResourceCommand::Dump(dump) => run_dump(dump, keys),
+        ResourceCommand::Rename(rename) => run_rename(rename),
     }
+}
+
+/// The hashes a `--from` argument stands for: a `0x` hash as given, or a
+/// name in both the spelling given and lowercase (asset names are hashed
+/// lowercase, but a file written by hand may carry either).
+fn from_hashes(from: &str) -> Vec<u32> {
+    if let Some(hex) = from.strip_prefix("0x").or_else(|| from.strip_prefix("0X"))
+        && let Ok(h) = u32::from_str_radix(hex, 16)
+    {
+        return vec![h];
+    }
+    let mut v = vec![rage_joaat(from)];
+    let lower = rage_joaat(&from.to_lowercase());
+    if lower != v[0] {
+        v.push(lower);
+    }
+    v
+}
+
+/// Replaces `old` wherever it is a whole element text or attribute value
+/// (`>old<`, `"old"`), case-insensitively; returns the text and the count.
+pub fn rename_in_xml(text: &str, old: &str, new: &str) -> (String, usize) {
+    let mut out = String::with_capacity(text.len());
+    let mut count = 0;
+    let lower = text.to_lowercase();
+    let needle = old.to_lowercase();
+    let mut pos = 0;
+    while let Some(i) = lower[pos..].find(&needle) {
+        let start = pos + i;
+        let end = start + needle.len();
+        let before = text[..start].chars().next_back();
+        let after = text[end..].chars().next();
+        let whole = matches!(before, Some('>') | Some('"') | Some('\'')) && matches!(after, Some('<') | Some('"') | Some('\''));
+        out.push_str(&text[pos..start]);
+        if whole {
+            out.push_str(new);
+            count += 1;
+        } else {
+            out.push_str(&text[start..end]);
+        }
+        pos = end;
+    }
+    out.push_str(&text[pos..]);
+    (out, count)
+}
+
+fn run_rename(args: &RenameArgs) -> Result<()> {
+    let path = &args.file;
+    let data = std::fs::read(path).with_context(|| format!("failed to read '{}'", path.display()))?;
+    let container = detect(&data).with_context(|| format!("'{}'", path.display()))?;
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+
+    let new_hash = rage_joaat(&args.name.to_lowercase());
+
+    // Without --from, a map's own name (and parent) by the fixed layout;
+    // with it, every hash field equal to the old name, by the schema.
+    let (from_label, out, changed) = match (&args.from, &container) {
+        (None, Container::Rsc7(_)) if ext == "ymap" => {
+            let old = rage_formats::parse_ymap_header(&data).context("reading the map's name")?.name_hash;
+            let parent = args.parent.as_deref().map(|p| rage_joaat(&p.to_lowercase()));
+            let (out, n) = set_map_name(&data, new_hash, parent)?;
+            (format!("0x{old:08X}"), out, n)
+        }
+        (None, _) => bail!("--from is required: only a .ymap has one name of its own to set"),
+        (Some(from), Container::Rsc7(_)) => {
+            let (out, n) = rage_formats::meta_schema::replace_hashes(&data, &from_hashes(from), new_hash)
+                .with_context(|| format!("'{}' is an RSC7 resource but not a Meta file (only .ymap/.ytyp/.ymt carry names to rename)", path.display()))?;
+            (from.clone(), out, n)
+        }
+        (Some(from), Container::Meta(MetaContainer::Pso)) => {
+            let (out, n) = rage_formats::pso::replace_hashes(&data, &from_hashes(from), new_hash)?;
+            (from.clone(), out, n)
+        }
+        (Some(from), Container::Meta(MetaContainer::Xml)) => {
+            let text = String::from_utf8(data).context("the XML file is not UTF-8")?;
+            let (text, n) = rename_in_xml(&text, from, &args.name);
+            (from.clone(), text.into_bytes(), n)
+        }
+        (Some(_), Container::Meta(other)) => bail!("renaming inside a {other} file is not supported"),
+    };
+
+    if changed == 0 {
+        bail!("no name field in '{}' holds {from_label} (or it already is {}); nothing written", path.display(), args.name);
+    }
+    let dest = args.output.as_deref().unwrap_or(path);
+    if args.dry_run {
+        println!("Would rename {changed} field(s) {from_label} -> {} (0x{new_hash:08X}) in {}", args.name, dest.display());
+        return Ok(());
+    }
+    std::fs::write(dest, &out).with_context(|| format!("writing {}", dest.display()))?;
+    println!("Renamed {changed} field(s) {from_label} -> {} (0x{new_hash:08X}) in {}", args.name, dest.display());
+    if ext == "ymap" {
+        let stem = dest.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+        if !stem.eq_ignore_ascii_case(&args.name) {
+            eprintln!("note: the game registers this map as {stem} (its file name); rename the file to {}.ymap for the two to agree", args.name);
+        }
+        eprintln!("note: a _manifest.ymf declaring the old name needs the same change: rage resource rename _manifest.ymf {} --from {from_label}", args.name);
+    }
+    Ok(())
 }
 
 /// The file on disk whose siblings name the hashes, when the input is one.
@@ -939,6 +1069,21 @@ mod tests {
         // A stored +90° about z is a -90° heading in the world.
         assert!((entity_yaw_degrees(&e([0.0, 0.0, h, h])) + 90.0).abs() < 1e-3);
         assert!((entity_yaw_degrees(&e([0.0, 0.0, -0.17364818, 0.9848077])) - 20.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn xml_rename_touches_whole_values_only() {
+        let (out, n) = rename_in_xml("<a><imapName>map1</imapName><x>map10</x><y name=\"MAP1\"/>map1 </a>", "map1", "beach");
+        assert_eq!(n, 2);
+        assert_eq!(out, "<a><imapName>beach</imapName><x>map10</x><y name=\"beach\"/>map1 </a>");
+        assert_eq!(rename_in_xml("<a/>", "map1", "b").1, 0);
+    }
+
+    #[test]
+    fn from_hashes_take_a_hash_or_both_spellings() {
+        assert_eq!(from_hashes("0xAEC13995"), vec![0xAEC13995]);
+        assert_eq!(from_hashes("map1"), vec![rage_joaat("map1")]);
+        assert_eq!(from_hashes("bombaPALETO"), vec![rage_joaat("bombaPALETO"), rage_joaat("bombapaleto")]);
     }
 
     #[test]

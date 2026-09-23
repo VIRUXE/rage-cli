@@ -110,9 +110,13 @@ carries the layout of its own structures inside the RSC7 body, and a
 `_manifest.ymf` or `.pso` carries the same in the big-endian PSO container
 (FiveM also accepts hand-written XML manifests). Names in them are JOAAT
 hashes. `resource info` reads the map, type and manifest files by name;
-`resource dump` writes any of them out whole as XML or JSON; `names harvest`
-builds the hash-to-name list from the game's own files so both print names
-rather than `hash_XXXXXXXX`.
+`resource dump` writes any of them out whole as XML or JSON. Some 20,000 of
+the game's own structure, member and enum names are built in, so a dump's
+`itemType`s and fields read as `CVehicleModelColorIndices` and `modelName`
+out of the box; `names harvest` (from the game's files) or `names fetch`
+(from a public list, no game install needed) add the content names —
+archetypes, maps, dictionaries — so those print rather than
+`hash_XXXXXXXX`.
 
 **Load order.** The game reads its base archives, then `update.rpf`, then
 each DLC pack in the order `dlclist.xml` and the packs' `setup2.xml` decide.
@@ -152,8 +156,8 @@ debug logging, `--no-update-check` to skip the daily release check.
 | `info <archive>` | version, encryption, entry count, size |
 | `list <archive> [pattern] [-d]` | one archive's top level, optionally filtered |
 | `tree <archive> [--depth N]` | the same as a tree |
-| `search <path> <pattern> \| --content \| --hex \| --hash` | find files by name, contents or JOAAT hash, descending into nested archives; `<path>` may be a directory |
-| `extract <archive> [pattern] -o DIR [--recursive]` | write files out; `--recursive` descends into nested archives and gives resources a valid RSC7 header |
+| `search <path> <pattern> \| --content \| --hex \| --hash` | find files by name, contents or JOAAT hash, descending into nested archives; `<path>` may be a directory, and `<pattern> <path>` works too |
+| `extract <archive> [pattern]... -o DIR [--recursive]` | write files out, any number of exact paths or globs in one pass; `--recursive` descends into nested archives and gives resources a valid RSC7 header |
 | `verify <archive>` | integrity check |
 | `create <dir> -o FILE [--version 7] [--encryption none\|open\|ng]` | build an archive from a directory |
 | `extract-keys --exe PATH -o DIR` | write the keys to disk for `--keys` |
@@ -164,7 +168,8 @@ debug logging, `--no-update-check` to skip the daily release check.
 |---|---|
 | `resource info <file> [--archive RPF] [--json] [--limit N] [--names FILE]...` | header plus a summary: every texture of a `.ytd`; bounds, LODs, geometry and shaders of a drawable; name, flags, extents and entity table of a `.ymap`; archetypes and interiors of a `.ytyp`; dependencies of a `_manifest.ymf` (PSO, RBF or XML) |
 | `resource dump <file> [--archive RPF] [--json] [-o FILE] [--names FILE]...` | any Meta or PSO file (`.ymap` `.ytyp` `.ymt` `.ymf` `.pso`) as XML in CodeWalker's layout, or as JSON |
-| `names harvest \| info \| lookup <term>...` | the hash-to-name list: build it from the game (`--exe` required), see where it is, or hash a name / name a hash |
+| `resource rename <file> <name> [--from NAME] [-o FILE] [--dry-run]` | change a name inside a file in place: a `.ymap`'s own name (the default), or any hash field or XML value equal to `--from`, in Meta, PSO and XML files |
+| `names harvest \| fetch \| info \| lookup <term>...` | the hash-to-name list: build it from the game (`--exe` required), download a public one (`--build N` says what it covers), see where it is and which game build it covers, or hash a name / name a hash |
 | `textures <archive> <file> [-o DIR] [--format png\|jpg\|webp] [--sheet] [--max-size PX] [--dds]` | export a dictionary's textures, or the textures baked into a drawable, as images (alias `ytd`) |
 
 ### Rendering
@@ -290,9 +295,10 @@ stem, or `navmesh cell`.
 
 ```sh
 rage extract resource.rpf -o ./out                       # everything
-rage extract "<GTA V>/x64e.rpf" "*/vehicles.rpf" -o ./nested   # one nested archive, as a file
-rage extract "<GTA V>/x64e.rpf" "*/weapons.rpf" -o ./nested
+rage extract "<GTA V>/x64e.rpf" "*/vehicles.rpf" "*/weapons.rpf" -o ./nested   # two nested archives, as files
 rage extract "<GTA V>/x64b.rpf" -o ./nested --recursive  # descend into every nested rpf, to loose files
+rage extract "<GTA V>/update/update.rpf" -o ./meta \
+    common/data/handling.meta common/data/levels/gta5/vehicles.meta "x64/data/car*.ymt"   # one pass
 ```
 
 Retail `x64*.rpf` archives keep drawables inside nested RPFs, so a model has
@@ -475,8 +481,37 @@ The map's own name is the hash the game knows it by; it prints as text when
 a file next to it, the built-in list or the harvested list has the name.
 Archetype names come from the same places, so run `rage names harvest` once
 (it scans the game's archives for every file stem and every XML name, a few
-minutes) to have vanilla props named. `--json` gives the whole entity list
-with positions, headings and flags; `--limit 0` lists every entity in text.
+minutes), or `rage names fetch` on a machine without the game (a public
+list, current to the build you pass with `--build`), to have vanilla props
+named. `--json` gives the whole entity list with positions, headings and
+flags; `--limit 0` lists every entity in text.
+
+The game registers a map under its file name, while parent links and
+manifest `imapName` entries use the name inside the file. A `.ymap` renamed
+in the explorer keeps its old internal name, so nothing binds to it any
+more and nothing looks wrong; `resource info` compares the two and says so:
+
+```
+Map:       hash_AEC13995  parent -
+           warning: the file is called casas_praia_extras but the map calls itself hash_AEC13995 (0xAEC13995); the game registers it as casas_praia_extras,
+           so parent links and _manifest.ymf imapName entries that say hash_AEC13995 will not bind (renamed outside CodeWalker?)
+```
+
+(`0xAEC13995` is `map1`, CodeWalker's default.) A manifest gets the
+matching check: an `imapName` with no `.ymap` beside it is marked as a
+vanilla map when some name list knows it, or as a likely leftover when
+none does. Both are fixed in place, without CodeWalker:
+
+```sh
+rage resource rename stream/casas_praia_extras.ymap casas_praia_extras      # CMapData.name follows the file
+rage resource rename stream/_manifest.ymf casas_praia_extras --from map1    # the manifest follows the map
+```
+
+`rename` rewrites only the hash fields the file's own schema says are
+names (every one equal to `--from`, which for a `.ymap` defaults to the
+map's own name), re-pages a Meta file into a fresh RSC7 container and
+patches a PSO file in place; an XML manifest is edited as text.
+`--dry-run` says what would change.
 
 A manifest works the same way, whatever it was written in:
 
@@ -496,10 +531,13 @@ rage resource dump stream/bombaPALETO.ymap -o bombaPALETO.ymap.xml
 rage resource dump stream/_manifest.ymf --json
 ```
 
-Hashes with no known name print as `hash_XXXXXXXX`; `rage names lookup
-0x18C49531` looks one up, `rage names lookup prop_barier_conc_05b` hashes a
-name, and `--names FILE` adds a list of your own (one name per line) to any
-of these commands.
+Hashes with no known name print as `hash_XXXXXXXX`, and the output ends
+with how many there were and which game build the name list covers — a name
+absent from a list older than the file is not proof the asset does not
+exist. `rage names info` says the same about the list, `rage names lookup
+0x18C49531` looks one hash up, `rage names lookup prop_barier_conc_05b`
+hashes a name, and `--names FILE` adds a list of your own (one name per
+line) to any of these commands.
 
 ### Plot an exterior map
 
@@ -762,7 +800,9 @@ what lets `rage plot v_bahama` draw a vanilla interior from its name alone.
 Indexing every `.ymap` for that makes `index build` run about 7% slower than
 before interiors were tracked. Rebuild it after a game update; a cache
 written by an older `rage` is no longer readable (`index info` says so) and
-is rebuilt automatically the next time `plot` or `screenshot` needs it.
+is rebuilt automatically the next time `plot` or `screenshot` needs it,
+which says so up front and shows its progress archive by archive
+(`--no-index` skips it when the embedded and `--ytd` textures are enough).
 
 ### Updating
 
@@ -861,7 +901,8 @@ Version 0.16 renamed the project. What changed for you:
 ## Acknowledgements
 
 - CodeWalker (<https://github.com/dexyfex/CodeWalker>), the reference for
-  every byte layout in this toolchain
+  every byte layout in this toolchain, and whose `MetaNames` table is where
+  the built-in list of the game's schema names was compiled from
 - Swage (<https://github.com/0x1F9F1/Swage>)
 - Contributors of <https://gtamods.com/wiki/RPF_archive>
 

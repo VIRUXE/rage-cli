@@ -242,6 +242,60 @@ fn map_named_unlike_its_file_is_flagged() {
     assert!(!out.contains("warning"), "{out}");
 }
 
+/// `rename` fixes the renamed-in-the-explorer map from the issue: the
+/// internal name follows the file, the manifest follows the map.
+#[test]
+fn rename_changes_a_maps_own_name_and_a_manifests_entry() {
+    use rage_formats::{ymap::tests::sample_exterior_ymap, Vec3};
+    let tmp = tempfile::tempdir().unwrap();
+    let bytes = sample_exterior_ymap("map1", &[("prop_a", Vec3::new(1.0, 2.0, 3.0), 0.0)]);
+    let ymap = write(tmp.path(), "casas_praia_extras.ymap", &bytes);
+
+    let out = ok(&["resource", "rename", &ymap, "casas_praia_extras", "--dry-run"]);
+    assert!(out.contains("Would rename 1 field(s) 0xAEC13995 -> casas_praia_extras"), "{out}");
+    assert_eq!(std::fs::read(&ymap).unwrap(), bytes, "a dry run writes nothing");
+
+    let output = rpf(&["resource", "rename", &ymap, "casas_praia_extras"]);
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("rage resource rename _manifest.ymf casas_praia_extras --from 0xAEC13995"), "{stderr}");
+
+    let info = ok(&["resource", "info", &ymap]);
+    assert!(info.contains("Map:       casas_praia_extras"), "{info}");
+    assert!(!info.contains("warning"), "{info}");
+    assert!(info.contains("Entities:  1"), "the rest of the map survives: {info}");
+
+    // Nothing left to rename: an error, and the file is left alone.
+    let after = std::fs::read(&ymap).unwrap();
+    let output = rpf(&["resource", "rename", &ymap, "other", "--from", "map1"]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("nothing written"));
+    assert_eq!(std::fs::read(&ymap).unwrap(), after);
+
+    // The manifest, in its PSO form (the fixture's root has a `name` hash of map1)...
+    let pso = write(tmp.path(), "_manifest.ymf", &rage_formats::pso::tests::sample_pso(false));
+    let renamed = tmp.path().join("renamed.ymf");
+    let out = ok(&["resource", "rename", &pso, "casas_praia_extras", "--from", "map1", "-o", renamed.to_str().unwrap()]);
+    assert!(out.contains("Renamed 1 field(s) map1 -> casas_praia_extras"), "{out}");
+    assert_eq!(std::fs::metadata(&renamed).unwrap().len(), std::fs::metadata(&pso).unwrap().len());
+    let names = write(tmp.path(), "n.txt", b"TestRoot\nname\n");
+    let xml = ok(&["resource", "dump", renamed.to_str().unwrap(), "--names", &names]);
+    assert!(xml.contains("<name>casas_praia_extras</name>"), "{xml}");
+
+    // ...and in XML.
+    let manifest = "<?xml version=\"1.0\"?><CPackFileMetaData><imapDependencies_2><Item><imapName>map1</imapName><itypDepArray><Item>map1_props</Item></itypDepArray></Item></imapDependencies_2></CPackFileMetaData>";
+    let xml_manifest = write(tmp.path(), "x_manifest.ymf", manifest.as_bytes());
+    let out = ok(&["resource", "rename", &xml_manifest, "casas_praia_extras", "--from", "map1"]);
+    assert!(out.contains("Renamed 1 field(s)"), "{out}");
+    let text = std::fs::read_to_string(&xml_manifest).unwrap();
+    assert!(text.contains("<imapName>casas_praia_extras</imapName>"), "{text}");
+    assert!(text.contains("map1_props"), "a longer name is not a match: {text}");
+
+    // --from is required for anything but a map.
+    let output = rpf(&["resource", "rename", &pso, "x"]);
+    assert!(!output.status.success());
+}
+
 /// A manifest's imapName entries either name a .ymap next to it, a vanilla
 /// map (known to some list), or nothing at all — the last being a leftover.
 #[test]
