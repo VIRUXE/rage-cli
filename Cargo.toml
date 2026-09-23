@@ -1,6 +1,6 @@
 [package]
 name = "rage-cli"
-version = "0.18.0"
+version = "0.19.0"
 edition = "2024"
 authors = ["VIRUXE"]
 description = "Swiss-army CLI for RAGE game files: RPF archives, RSC7 resources, textures, renders and navmeshes"
@@ -20,7 +20,7 @@ log = "0.4"
 env_logger = "0.11"
 clap = { version = "4.5", features = ["derive", "env"] }
 rpf-archive = "0.10"
-rage-formats = "0.2"
+rage-formats = "0.2.1"
 rage-render = "0.2"
 ureq = "3.4"
 json = "0.12"
@@ -29,7 +29,7 @@ sha2 = "0.10"
 
 [dev-dependencies]
 tempfile = "3.10"
-rage-formats = { version = "0.2", features = ["test-support"] }
+rage-formats = { version = "0.2.1", features = ["test-support"] }
 
 # Cross-compilation targets
 [target.'cfg(windows)'.dependencies]
