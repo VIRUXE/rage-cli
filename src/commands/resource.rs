@@ -33,6 +33,32 @@ pub enum ResourceCommand {
     Dump(DumpArgs),
     /// Change a name inside a .ymap (its own name), a .ymf or any Meta/PSO/XML file, in place
     Rename(RenameArgs),
+    /// Build a .ymap/.ytyp/.ymt or a _manifest.ymf/.pso from XML or JSON written by `dump`
+    Build(BuildArgs),
+}
+
+#[derive(clap::Args)]
+pub struct BuildArgs {
+    /// The XML or JSON to build from (as `resource dump` writes it)
+    pub file: PathBuf,
+
+    /// The file to write; its extension picks the container unless --format says otherwise
+    #[arg(short, long, value_name = "FILE")]
+    pub output: PathBuf,
+
+    /// meta (RSC7 .ymap/.ytyp/.ymt) or pso (.ymf/.pso); default: by the output extension
+    #[arg(long, value_name = "meta|pso")]
+    pub format: Option<String>,
+
+    /// Binary Meta/PSO files whose structure definitions take precedence
+    /// over the built-in CodeWalker tables (the original file is a good one);
+    /// an existing output file is used the same way
+    #[arg(long, value_name = "FILE")]
+    pub schema: Vec<PathBuf>,
+
+    /// Treat any structure the writer could not fill as an error
+    #[arg(long)]
+    pub strict: bool,
 }
 
 #[derive(clap::Args)]
@@ -245,6 +271,7 @@ pub fn run(args: &ResourceArgs, keys: Option<&GtaKeys>, verbose: bool) -> Result
         ResourceCommand::Info(info) => run_info(info, keys, verbose),
         ResourceCommand::Dump(dump) => run_dump(dump, keys),
         ResourceCommand::Rename(rename) => run_rename(rename),
+        ResourceCommand::Build(build) => run_build(build),
     }
 }
 
@@ -348,6 +375,70 @@ fn run_rename(args: &RenameArgs) -> Result<()> {
 }
 
 /// The file on disk whose siblings name the hashes, when the input is one.
+fn run_build(args: &BuildArgs) -> Result<()> {
+    use rage_formats::{build_meta, build_pso, dump_meta, dump_pso, from_json, from_xml, Schema};
+
+    let text = std::fs::read_to_string(&args.file).with_context(|| format!("failed to read '{}'", args.file.display()))?;
+    let value = if text.trim_start().starts_with('{') {
+        from_json(&text).with_context(|| format!("'{}'", args.file.display()))?
+    } else {
+        from_xml(&text).with_context(|| format!("'{}'", args.file.display()))?
+    };
+
+    let out_ext = args.output.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+    let format = match args.format.as_deref().map(str::to_lowercase).as_deref() {
+        Some("meta") => "meta",
+        Some("pso") => "pso",
+        Some(other) => bail!("--format {other}: expected meta or pso"),
+        None if matches!(out_ext.as_str(), "ymf" | "pso") => "pso",
+        None if matches!(out_ext.as_str(), "ymap" | "ytyp" | "ymt") => "meta",
+        None => bail!("cannot tell the container from '.{out_ext}'; write a .ymap/.ytyp/.ymt or .ymf/.pso, or pass --format"),
+    };
+
+    let mut schema = Schema::builtin().clone();
+    let mut sources: Vec<&Path> = args.schema.iter().map(PathBuf::as_path).collect();
+    if args.output.is_file() && !sources.contains(&args.output.as_path()) {
+        sources.push(&args.output);
+    }
+    for path in sources {
+        let data = std::fs::read(path).with_context(|| format!("failed to read '{}'", path.display()))?;
+        let own = Schema::from_file(&data).with_context(|| format!("'{}' as a schema source", path.display()))?;
+        eprintln!("Using the structure definitions of {} ({} structures)", path.display(), own.meta_structs.len() + own.pso_structs.len());
+        schema.merge(own);
+    }
+
+    let written = if format == "pso" { build_pso(&value, &schema)? } else { build_meta(&value, &schema)? };
+    for warning in &written.warnings {
+        eprintln!("warning: {warning}");
+    }
+    if args.strict && !written.warnings.is_empty() {
+        bail!("{} member(s) could not be written (--strict)", written.warnings.len());
+    }
+
+    // Read it back the way `dump` would, so a file the tool cannot read is
+    // never handed over silently.
+    let check = if format == "pso" { dump_pso(&written.bytes) } else { dump_meta(&written.bytes) };
+    let check = check.context("the written file does not read back")?;
+    for warning in &check.warnings {
+        eprintln!("warning: reading the result back: {warning}");
+    }
+    if let Some(parent) = args.output.parent().filter(|p| !p.as_os_str().is_empty()) {
+        std::fs::create_dir_all(parent).with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    std::fs::write(&args.output, &written.bytes).with_context(|| format!("writing {}", args.output.display()))?;
+    let root = value.as_struct().map_or(0, |s| s.type_hash);
+    let names = crate::names::load(&[], Some(&args.output))?;
+    eprintln!(
+        "Wrote {} ({} bytes, {} from {}, root {})",
+        args.output.display(),
+        written.bytes.len(),
+        if format == "pso" { "PSO" } else { "RSC7 Meta" },
+        args.file.display(),
+        names.resolve(root),
+    );
+    Ok(())
+}
+
 fn local_path(file: &str, archive: Option<&Path>) -> Option<PathBuf> {
     archive.is_none().then(|| PathBuf::from(file))
 }

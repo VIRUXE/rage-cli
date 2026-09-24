@@ -169,6 +169,7 @@ debug logging, `--no-update-check` to skip the daily release check.
 | `resource info <file> [--archive RPF] [--json] [--limit N] [--names FILE]...` | header plus a summary: every texture of a `.ytd`; bounds, LODs, geometry and shaders of a drawable; name, flags, extents and entity table of a `.ymap`; archetypes and interiors of a `.ytyp`; dependencies of a `_manifest.ymf` (PSO, RBF or XML) |
 | `resource dump <file> [--archive RPF] [--json] [-o FILE] [--names FILE]...` | any Meta or PSO file (`.ymap` `.ytyp` `.ymt` `.ymf` `.pso`) as XML in CodeWalker's layout, or as JSON |
 | `resource rename <file> <name> [--from NAME] [-o FILE] [--dry-run]` | change a name inside a file in place: a `.ymap`'s own name (the default), or any hash field or XML value equal to `--from`, in Meta, PSO and XML files |
+| `resource build <file.xml\|file.json> -o FILE [--format meta\|pso] [--schema FILE]... [--strict]` | the inverse of `dump`: a `.ymap`/`.ytyp`/`.ymt` (RSC7 Meta) or `_manifest.ymf`/`.pso` (PSO) from the XML or JSON, using CodeWalker's structure tables, or those of the original file with `--schema` |
 | `names harvest \| fetch \| info \| lookup <term>...` | the hash-to-name list: build it from the game (`--exe` required), download a public one (`--build N` says what it covers), see where it is and which game build it covers, or hash a name / name a hash |
 | `textures <archive> <file> [-o DIR] [--format png\|jpg\|webp] [--sheet] [--max-size PX] [--dds]` | export a dictionary's textures, or the textures baked into a drawable, as images (alias `ytd`); a loose `.ytd`/`.ydr`/`.ydd`/`.yft` needs no archive |
 | `textures encode <image\|dir\|glob>... [-o FILE\|DIR] [--format bc1\|bc3\|bc4\|bc5\|bc7\|rgba8] [--mips auto\|N]` | PNG/TGA/JPG/WebP/BMP to DDS with a full mip chain: BC5 for `*_n` normal maps, BC3 with alpha, BC1 otherwise |
@@ -436,6 +437,31 @@ are and encodes images with the same options as `encode`. `--from` starts
 from an existing dictionary, so adding one texture to a copy of a stock
 `.ytd` is one command. The result reads back with `textures`, `resource info`
 and CodeWalker.
+
+### Rebuild a resource file from XML or JSON
+
+```sh
+rage resource dump casas_praia_extras.ymap -o casas.xml     # edit casas.xml: fix <name>, move an entity...
+rage resource build casas.xml -o casas_praia_extras.ymap    # and write the map back
+rage resource dump _manifest.ymf --json -o manifest.json
+rage resource build manifest.json -o _manifest.ymf
+```
+
+`build` is `dump` run backwards. It takes the XML (CodeWalker's layout) or
+JSON that `dump` writes, edited or not, and produces the binary file: an
+RSC7 Meta container for `.ymap`, `.ytyp` and `.ymt`, a PSO file for
+`_manifest.ymf` and `.pso`. Names are hashed where the game stores a hash,
+enum members and flag names are looked up, and a `hash_XXXXXXXX` left by a
+dump that could not name something goes back in as that hash.
+
+The structure definitions come from CodeWalker's tables, which cover the
+map, type, manifest and most `.ymt` structures. For anything else, or to
+keep exactly what a particular file declared, `--schema FILE` takes the
+definitions from a binary Meta or PSO file (the file being rebuilt is the
+natural choice, and an existing output file is used automatically). A
+member the writer cannot fill is reported and left zero; `--strict` makes
+that an error. The result is read back before it is written, so what comes
+out is a file `dump` and CodeWalker agree on.
 
 ### Inspect a resource file
 
