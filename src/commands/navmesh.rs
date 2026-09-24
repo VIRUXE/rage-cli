@@ -269,7 +269,7 @@ fn find_in_archive(
         let lower = file.name.to_lowercase();
         if lower.ends_with(".rpf") {
             if !lower.contains("nav") { continue; }
-            if let Ok(nested) = archive.extract(&file, keys).and_then(|d| Archive::from_bytes(d, &file.name, keys)) {
+            if let Ok(nested) = archive.open_nested(&file, keys) {
                 find_in_archive(&nested, &format!("{label}:{}", file.path), hash, keys, depth + 1, on_hit)?;
             }
             continue;

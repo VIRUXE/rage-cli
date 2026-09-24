@@ -218,27 +218,14 @@ impl<'a> PropResolver<'a> {
         Some(PropShape::Box(lo, hi))
     }
 
-    /// The cached game index, if it has been built; never builds it here,
-    /// since that takes minutes and a plot should say so instead.
+    /// The game index, loaded from the cache or built on first use (a build
+    /// takes seconds; see `GameIndex::build`).
     fn index(&mut self) -> Option<&GameIndex> {
         if self.index.is_none() {
-            let loaded = self.exe.and_then(|exe| {
-                let exe_path = crate::keys::resolve_exe(exe).ok()?;
-                let path = GameIndex::cache_path(&exe_path)?;
-                if !path.is_file() {
-                    return None;
-                }
-                match GameIndex::load_cached(&path) {
-                    Ok(index) => Some(index),
-                    Err(err) => {
-                        eprintln!("warning: game index cache at {} is unusable ({err}); run `rage index build`", path.display());
-                        None
-                    }
-                }
-            });
+            let loaded = GameIndex::load_or_build(self.exe, self.keys);
             if loaded.is_none() && !self.warned_no_index {
                 self.warned_no_index = true;
-                eprintln!("props are not resolved from the game: run `rage index build` first (needs --exe or GTAV_PATH)");
+                eprintln!("props are not resolved from the game: no game index (needs --exe or GTAV_PATH)");
             }
             self.index = Some(loaded);
         }

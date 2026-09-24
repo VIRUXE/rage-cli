@@ -235,8 +235,7 @@ fn harvest_archive(archive: &Archive, keys: Option<&GtaKeys>, out: &mut BTreeSet
     for file in archive.list_files() {
         let name_lower = file.name.to_lowercase();
         if name_lower.ends_with(".rpf") {
-            let Ok(data) = archive.extract(file, keys) else { continue };
-            let Ok(nested) = Archive::from_bytes(data, &file.name, keys) else { continue };
+            let Ok(nested) = archive.open_nested(file, keys) else { continue };
             harvest_archive(&nested, keys, out);
             continue;
         }

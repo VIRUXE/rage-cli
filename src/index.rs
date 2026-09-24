@@ -86,8 +86,12 @@ const TXD_RELATIONSHIP_FILES: [&str; 4] = ["gtxd.ymt", "gtxd.meta", "mph4_gtxd.y
 impl GameIndex {
     /// Builds the index by walking every `.rpf` under `game_root`,
     /// descending into nested archives. This decompresses every `.ytyp` and
-    /// the two resident dictionaries, but only reads the directory listing
-    /// of everything else — no other `.ytd` is decoded.
+    /// `.ymap` and the two resident dictionaries, but only reads the
+    /// directory listing of everything else — no other `.ytd` is decoded.
+    /// Archives are memory-mapped, so only those entries and the TOCs are
+    /// read from disk, and they are indexed in parallel, one partial index
+    /// per top-level archive, merged afterwards in rank order so the
+    /// override rules are exactly those of a serial scan.
     ///
     /// `archives` is re-ranked base -> update -> DLC (see `archive_tier` and
     /// `dlc_load_order`) before indexing, matching the order the game itself
@@ -96,23 +100,55 @@ impl GameIndex {
     pub fn build(game_root: &Path, keys: Option<&GtaKeys>) -> Result<Self> {
         let archives = ranked_archives(game_root, keys)?;
 
-        let mut index = GameIndex::default();
+        use rayon::prelude::*;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
         let total = archives.len();
-        for (n, archive_path) in archives.iter().enumerate() {
-            progress(n + 1, total, archive_path.strip_prefix(game_root).unwrap_or(archive_path));
-            let archive = match Archive::open(archive_path, keys) {
-                Ok(a) => a,
-                Err(e) => { eprintln!("\nindex: skipping {}: {}", archive_path.display(), e); continue; }
-            };
-            if archive.require_keys(keys).is_err() {
-                eprintln!("\nindex: skipping {} (needs keys)", archive_path.display());
-                continue;
-            }
-            index_archive(&archive, archive_path, &[], keys, &mut index);
-        }
+        let done = AtomicUsize::new(0);
+        let partials: Vec<GameIndex> = archives
+            .par_iter()
+            .map(|archive_path| {
+                let mut part = GameIndex::default();
+                match Archive::open(archive_path, keys) {
+                    Ok(archive) if archive.require_keys(keys).is_err() => {
+                        eprintln!("\nindex: skipping {} (needs keys)", archive_path.display());
+                    }
+                    Ok(archive) => index_archive(&archive, archive_path, &[], keys, &mut part),
+                    Err(e) => eprintln!("\nindex: skipping {}: {}", archive_path.display(), e),
+                }
+                let n = done.fetch_add(1, Ordering::Relaxed) + 1;
+                progress(n, total, archive_path.strip_prefix(game_root).unwrap_or(archive_path));
+                part
+            })
+            .collect();
         eprint!("\r{:<78}\r", "");
 
+        // `collect` keeps `archives`' order, so this replays a serial scan.
+        let mut index = GameIndex::default();
+        for part in partials {
+            index.merge(part);
+        }
         Ok(index)
+    }
+
+    /// Folds in the index of an archive that loads after everything already
+    /// merged: last-wins maps take `later`'s values, `parent_txds` keeps
+    /// the first relationship seen, and placement lists are appended.
+    fn merge(&mut self, later: GameIndex) {
+        self.ytd_by_name.extend(later.ytd_by_name);
+        self.archetype_txd.extend(later.archetype_txd);
+        self.archetype_box.extend(later.archetype_box);
+        self.resident_textures.extend(later.resident_textures);
+        for (child, parent) in later.parent_txds {
+            self.parent_txds.entry(child).or_insert(parent);
+        }
+        self.mlo_ytyp.extend(later.mlo_ytyp);
+        for (archetype, locs) in later.mlo_instances {
+            self.mlo_instances.entry(archetype).or_default().extend(locs);
+        }
+        self.ybn_by_name.extend(later.ybn_by_name);
+        self.drawable_by_name.extend(later.drawable_by_name);
+        self.archetype_asset.extend(later.archetype_asset);
     }
 
     /// Reads the raw bytes of an already-located entry, descending through
@@ -132,10 +168,9 @@ impl GameIndex {
             // this crate (`search_recursive`, `extract_recursive`) — not
             // its full path within the parent, or the TOC decrypts to
             // garbage and every entry name comes back as a placeholder.
-            let bare_name = file.name.clone();
-            let data = archive.extract(file, keys)
-                .with_context(|| format!("failed to extract nested archive '{}'", nested_path))?;
-            archive = Archive::from_bytes(data, &bare_name, keys)?;
+            // `open_nested` passes exactly that.
+            archive = archive.open_nested(file, keys)
+                .with_context(|| format!("failed to open nested archive '{}'", nested_path))?;
         }
 
         let file = archive
@@ -273,12 +308,12 @@ impl GameIndex {
             }
         }
 
-        // A build takes minutes with nothing else to show for it, so say
-        // what is happening, why, and how to avoid it next time.
+        // A build reads every archive's table of contents and every .ytyp
+        // and .ymap: seconds when the files are mapped and read in parallel,
+        // longer on a cold spinning disk. Say what is happening and why.
         let build = crate::keys::exe_version(&exe_path).and_then(|v| crate::keys::build_number(&v)).map_or(String::new(), |b| format!(" for game build {b}"));
         println!(
-            "Texture index{build} is {why}; building it now — a one-off that takes a few minutes and is cached under {}.\n\
-             (`rage index build` does this ahead of time; `--no-index` skips it when the embedded and --ytd textures are enough.)",
+            "Game index{build} is {why}; building it now and caching it under {}.",
             cache_path.as_deref().and_then(Path::parent).map_or("~/.rage-cli/index".to_string(), |p| p.display().to_string()),
         );
         let index = match GameIndex::build(&game_root, keys) {
@@ -462,8 +497,7 @@ fn index_archive(archive: &Archive, archive_path: &Path, nested_rpfs: &[String],
         let name_lower = file.name.to_lowercase();
 
         if name_lower.ends_with(".rpf") {
-            let Ok(data) = archive.extract(file, keys) else { continue };
-            let Ok(nested) = Archive::from_bytes(data, &file.name, keys) else { continue };
+            let Ok(nested) = archive.open_nested(file, keys) else { continue };
             let mut chain = nested_rpfs.to_vec();
             chain.push(file.path.clone());
             index_archive(&nested, archive_path, &chain, keys, out);

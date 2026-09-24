@@ -232,7 +232,7 @@ fn search_recursive(
 
         if is_rpf {
             sink.nested += 1;
-            match archive.extract(file, keys).and_then(|d| Archive::from_bytes(d, &file.name, keys)) {
+            match archive.open_nested(file, keys) {
                 Ok(nested) => search_recursive(&nested, archive_path, &full, filters, keys, max_depth, depth + 1, sink)?,
                 Err(e) => eprintln!("failed to open nested {}: {}", full, e),
             }

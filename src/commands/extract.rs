@@ -114,13 +114,11 @@ fn count_recursive(archive: &Archive, keys: Option<&GtaKeys>, depth: usize) -> (
     for file in &refs {
         if file.name.to_lowercase().ends_with(".rpf") {
             nested += 1;
-            if let Ok(data) = archive.extract(file, keys) {
-                if let Ok(child) = Archive::from_bytes(data, &file.name, keys) {
-                    let (f, r, n) = count_recursive(&child, keys, depth + 1);
-                    files += f;
-                    resources += r;
-                    nested += n;
-                }
+            if let Ok(child) = archive.open_nested(file, keys) {
+                let (f, r, n) = count_recursive(&child, keys, depth + 1);
+                files += f;
+                resources += r;
+                nested += n;
             }
         } else {
             files += 1;
@@ -151,7 +149,7 @@ fn extract_recursive(
     }
 
     // Clone the FileRefs so we don't hold an immutable borrow of `archive` across the
-    // nested `Archive::from_bytes` recursion.
+    // nested `Archive::open_nested` recursion.
     let files: Vec<FileRef> = archive.list_files().into_iter().cloned().collect();
 
     for file in &files {
@@ -160,6 +158,18 @@ fn extract_recursive(
         } else {
             format!("{}/{}", prefix, file.path)
         };
+
+        if file.name.to_lowercase().ends_with(".rpf") {
+            // Nested archive: open it in place and recurse under its full path.
+            match archive.open_nested(file, keys) {
+                Ok(nested) => extract_recursive(&nested, &full, output_path, patterns, keys, ok, fail, depth + 1),
+                Err(e) => {
+                    eprintln!("\nFailed to parse nested {}: {}", full, e);
+                    fail.set(fail.get() + 1);
+                }
+            }
+            continue;
+        }
 
         let data = match archive.extract(file, keys) {
             Ok(d) => d,
@@ -170,17 +180,6 @@ fn extract_recursive(
             }
         };
 
-        if file.name.to_lowercase().ends_with(".rpf") {
-            // Nested archive: parse the extracted bytes and recurse under its full path.
-            match Archive::from_bytes(data, &file.name, keys) {
-                Ok(nested) => extract_recursive(&nested, &full, output_path, patterns, keys, ok, fail, depth + 1),
-                Err(e) => {
-                    eprintln!("\nFailed to parse nested {}: {}", full, e);
-                    fail.set(fail.get() + 1);
-                }
-            }
-            continue;
-        }
 
         if !wanted(&full, patterns) { continue; }
 

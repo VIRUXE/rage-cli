@@ -495,8 +495,8 @@ rage search "<GTA V>" "*bag*.ydr" --json > bags.json
 rage screenshot ./nested/.../mp_biker_weed.rpf bkr_prop_weed_bag_01a.ydr --size 512x512 --format jpg --ytd bkr_prop_weed
 ```
 
-A full-install `*.ydr` search takes around two minutes and a single 512 px
-render under two seconds, so a few hundred props are a coffee break.
+A full-install `*.ydr` search takes a couple of seconds and a single 512 px
+render under two seconds, so a few hundred props take minutes.
 
 ### Drawable dictionaries and fragments
 
@@ -532,8 +532,8 @@ Entities:  5 (0 MLO instances)
 The map's own name is the hash the game knows it by; it prints as text when
 a file next to it, the built-in list or the harvested list has the name.
 Archetype names come from the same places, so run `rage names harvest` once
-(it scans the game's archives for every file stem and every XML name, a few
-minutes), or `rage names fetch` on a machine without the game (a public
+(it scans the game's archives for every file stem and every XML name, about
+ten seconds), or `rage names fetch` on a machine without the game (a public
 list, current to the build you pass with `--build`), to have vanilla props
 named. `--json` gives the whole entity list with positions, headings and
 flags; `--limit 0` lists every entity in text.
@@ -840,7 +840,7 @@ once is enough.
 ### The index
 
 ```sh
-rage index build    # a few minutes; scans every archive in load order
+rage index build    # a few seconds; scans every archive in load order
 rage index info
 rage index clear
 ```
@@ -849,12 +849,13 @@ The index is per game build and lives under `~/.rage-cli/index`. Besides the
 texture dictionaries it also records every interior (which `.ytyp` declares
 it), the `.ymap`s that place each one and the names of every `.ybn`, which is
 what lets `rage plot v_bahama` draw a vanilla interior from its name alone.
-Indexing every `.ymap` for that makes `index build` run about 7% slower than
-before interiors were tracked. Rebuild it after a game update; a cache
-written by an older `rage` is no longer readable (`index info` says so) and
-is rebuilt automatically the next time `plot` or `screenshot` needs it,
-which says so up front and shows its progress archive by archive
-(`--no-index` skips it when the embedded and `--ytd` textures are enough).
+Archives are memory-mapped and indexed in parallel, so a build reads only
+the tables of contents and the `.ytyp`/`.ymap` files it decodes: about two
+seconds on an SSD install with a warm file cache. There is no need to run it
+by hand. `plot` and `screenshot` build it the first time they need it, and
+again when the cache is missing or was written by an older `rage` (`index
+info` says so); `--no-index` skips it for `screenshot` when the embedded and
+`--ytd` textures are enough. Rebuild it after a game update.
 
 ### Updating
 
