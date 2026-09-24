@@ -148,8 +148,9 @@ enum Commands {
         encryption: String,
     },
 
-    /// Build, inspect, or clear the cached game-wide texture index that
-    /// `screenshot` uses to resolve external texture dictionaries
+    /// Build, inspect, or clear the cached game index (built automatically
+    /// when needed; this is for troubleshooting)
+    #[command(hide = true)]
     Index(index_cmd::IndexArgs),
 
     /// Write the keys out to disk for reuse with --keys

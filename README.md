@@ -35,7 +35,7 @@ can use on their own.
 ```
                  +-----------------------------------------------+
                  |  rage-cli   (this repo, binary `rage`)         |
-                 |  commands, texture index, navmesh generator    |
+                 |  commands, game index, navmesh generator       |
                  +-------+------------------+-------------------+-+
                          |                  |                   |
        +-----------------v---+   +----------v-----------+   +---v----------------+
@@ -120,18 +120,19 @@ archetypes, maps, dictionaries — so those print rather than
 
 **Load order.** The game reads its base archives, then `update.rpf`, then
 each DLC pack in the order `dlclist.xml` and the packs' `setup2.xml` decide.
-Later wins. Commands that fetch something "from the game" (`index`,
+Later wins. Commands that fetch something "from the game" (the game index,
 `navmesh cell`) follow that order so they hand you what the game would use.
 
 **Keys.** Retail archives need the AES key from your `GTA5.exe`; the NG keys
 and tables are derived from it. `--exe` or `GTAV_PATH` names the executable,
 and the result is cached per game build.
 
-**The index.** `screenshot` needs textures a model references but does not
-carry. `rage index build` scans every archive once and records which
-dictionary holds which texture, which archetype names which dictionary, the
-dictionary parent chain, and each archetype's bounding box. Renders and the
-navmesh generator read it from `~/.rage-cli/index`.
+**The game index.** Some answers need the whole game: which dictionary holds
+the textures a model references, which map places an interior, which file
+holds a vanilla prop's model. Commands that need one of these scan the
+archives the first time, in under a second on an SSD, and cache the result
+under `~/.rage-cli/index`. Nothing has to be run by hand, and the cache is
+rebuilt by itself when an archive changes.
 
 **Navmesh cells.** Pathfinding runs on `.ynv` files, one per 150 m grid cell,
 named `navmesh[X][Y].ynv` with X and Y the cell index times three. Interiors
@@ -193,11 +194,10 @@ debug logging, `--no-update-check` to skip the daily release check.
 | `navmesh build <cell> --ybn FILE... --clip x0,y0,x1,y1 --floor-z Z -o FILE [...]` | generate interior polygons from collision and append them to the cell; see [Building a navmesh for an interior](#building-a-navmesh-for-an-interior) |
 | `navmesh rewrite <ynv> -o FILE` | parse and write back unchanged; checks the writer against the game |
 
-### Game index and maintenance
+### Maintenance
 
 | Command | Does |
 |---|---|
-| `index build \| info \| clear` | the game-wide texture and archetype index (`--exe` required) |
 | `update check \| install` | self-update from GitHub releases |
 
 ## Samples
@@ -598,7 +598,7 @@ on the vanilla terrain — has no rooms or portals, only entities standing in
 the world. `plot` draws each one where it is, labelled with its archetype,
 and puts the prop's own model there when it can find one: a `.ydr`/`.ydd`
 in the folder named after the archetype, or the game's own model through
-the index when `--exe`/`GTAV_PATH` is set and `rage index build` has run.
+the game index when `--exe`/`GTAV_PATH` is set.
 An archetype with no model to hand is drawn as its bounding box (from a
 `.ytyp` in the folder or the index), and failing that as its mark alone.
 
@@ -837,25 +837,28 @@ needs an AES key from a real game executable, so the keys stay inert without
 one. The key material itself is the same across game versions; extracting
 once is enough.
 
-### The index
+### The game index
 
-```sh
-rage index build    # a few seconds; scans every archive in load order
-rage index info
-rage index clear
-```
+The index lives under `~/.rage-cli/index/<game build>/` in three files, one
+per part, and each command loads only the part it uses:
 
-The index is per game build and lives under `~/.rage-cli/index`. Besides the
-texture dictionaries it also records every interior (which `.ytyp` declares
-it), the `.ymap`s that place each one and the names of every `.ybn`, which is
-what lets `rage plot v_bahama` draw a vanilla interior from its name alone.
-Archives are memory-mapped and indexed in parallel, so a build reads only
-the tables of contents and the `.ytyp`/`.ymap` files it decodes: about two
-seconds on an SSD install with a warm file cache. There is no need to run it
-by hand. `plot` and `screenshot` build it the first time they need it, and
-again when the cache is missing or was written by an older `rage` (`index
-info` says so); `--no-index` skips it for `screenshot` when the embedded and
-`--ytd` textures are enough. Rebuild it after a game update.
+| Part | Holds | Used by |
+|---|---|---|
+| `textures.bin` | texture dictionaries by name, each archetype's dictionary, the parent chain, the resident dictionaries' textures | `screenshot` |
+| `interiors.bin` | which `.ytyp` declares each interior, the `.ymap`s that place it, collision files by name | `plot <interior name>` |
+| `models.bin` | model files by name, each archetype's box and model file | `plot` props, `navmesh build --game-props` |
+
+A missing part is built on first use. A part written for other archives,
+after a game update or a mod, is rebuilt on the next use without being asked.
+Archives are memory-mapped and read in parallel, so a build reads only the
+tables of contents, the `.ytyp` files and a few small ones. Which maps place
+an interior comes from the game's own world cache (`cache_y.dat`), so only
+the maps it names as placing one, and the script-loaded maps it does not
+describe, are opened: about 1,300 of 19,000. `--no-index` skips the index
+for `screenshot` when the embedded and `--ytd` textures are enough.
+
+`rage index info|build|clear` is hidden from the help, but still shows each
+part's state, rebuilds all of them, or deletes them.
 
 ### Updating
 
@@ -888,7 +891,7 @@ src/
   props.rs           what to draw for a placed entity: a folder model, a game model through the index, a box, or nothing
   names.rs           the name table `resource` prints through: built-in, harvested, `--names`, sibling file stems
   navmesh/mod.rs     the generator: grid, blocking, rectangles, edge linking, sinking
-  index.rs           the game-wide index: build (archives in load order), cache format, lookups
+  index.rs           the game index in three parts: build (archives in load order), per-part cache, lookups
   resources.rs       loading a resource by name from an archive or from disk
   keys.rs, paths.rs  key recovery/caching and the per-user directory
   update.rs          release check and self-update

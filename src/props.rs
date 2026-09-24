@@ -10,7 +10,7 @@ use std::rc::Rc;
 use anyhow::{Context, Result};
 use rage_formats::{parse_ydd, parse_ydr, parse_yft, rage_joaat, Archetype, Drawable, Vec3};
 
-use crate::index::{EntryLoc, GameIndex};
+use crate::index::{EntryLoc, GameIndex, Parts};
 use crate::plot_inputs::PlotSources;
 use crate::rpf::GtaKeys;
 
@@ -218,11 +218,11 @@ impl<'a> PropResolver<'a> {
         Some(PropShape::Box(lo, hi))
     }
 
-    /// The game index, loaded from the cache or built on first use (a build
-    /// takes seconds; see `GameIndex::build`).
+    /// The models part of the game index, loaded from the cache or built
+    /// on first use.
     fn index(&mut self) -> Option<&GameIndex> {
         if self.index.is_none() {
-            let loaded = GameIndex::load_or_build(self.exe, self.keys);
+            let loaded = GameIndex::load(self.exe, self.keys, Parts::MODELS);
             if loaded.is_none() && !self.warned_no_index {
                 self.warned_no_index = true;
                 eprintln!("props are not resolved from the game: no game index (needs --exe or GTAV_PATH)");

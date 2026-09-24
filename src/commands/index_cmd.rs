@@ -1,10 +1,10 @@
-// The `rage index` subcommand: build, inspect, or clear the cached game-wide
-// texture index that `screenshot` uses to resolve external texture
-// dictionaries. See `crate::index` for what the index actually holds.
+// The `rage index` subcommand, hidden from the help: every command that
+// needs the game index builds and caches the part it uses by itself (see
+// `crate::index`). This is for rebuilding, inspecting or clearing it by hand.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 
-use crate::index::GameIndex;
+use crate::index::{archives_fingerprint, GameIndex, Parts, Stale, LEGACY_FILE};
 use crate::rpf::GtaKeys;
 
 #[derive(clap::Args)]
@@ -15,11 +15,11 @@ pub struct IndexArgs {
 
 #[derive(clap::Subcommand)]
 pub enum IndexCommand {
-    /// Build the texture index and write it to the cache (rebuilds even if
-    /// a cache entry already exists)
+    /// Build every part of the index and write it to the cache (rebuilds
+    /// even if the cache is current)
     Build,
-    /// Show where the cache for this game build would live, and how big it
-    /// is if built
+    /// Show where the cache for this game build lives and whether each part
+    /// is current
     Info,
     /// Delete the cached index for this game build
     Clear,
@@ -29,50 +29,50 @@ pub fn run(args: &IndexArgs, keys: Option<&GtaKeys>, exe: Option<&std::path::Pat
     let exe = exe.context("--exe or GTAV_PATH is required for `rage index`")?;
     let exe_path = crate::keys::resolve_exe(exe)?;
     let game_root = exe_path.parent().context("--exe has no parent directory")?.to_path_buf();
-    let cache_path = GameIndex::cache_path(&exe_path);
+    let dir = GameIndex::cache_dir(&exe_path).context("no cache directory available (no HOME/USERPROFILE?)")?;
 
     match &args.command {
         IndexCommand::Build => {
-            println!("Building game index for {}...", game_root.display());
-            let index = GameIndex::build(&game_root, keys)?;
+            println!("Indexing {}...", game_root.display());
+            let fingerprint = archives_fingerprint(&game_root)?;
+            let index = GameIndex::build(&game_root, keys, Parts::ALL)?;
             println!("{}", index.summary());
-
-            let path = cache_path.context("no cache directory available (no HOME/USERPROFILE?)")?;
-            index.save_cached(&path)?;
-            println!("Wrote {}", path.display());
+            index.save(&dir, fingerprint)?;
+            println!("Wrote {}", dir.display());
             Ok(())
         }
         IndexCommand::Info => {
-            let Some(path) = cache_path else {
-                println!("No cache directory available (no HOME/USERPROFILE?)");
-                return Ok(());
-            };
-            println!("Cache path: {}", path.display());
-            if !path.is_file() {
-                println!("Not built yet — run `rage index build`.");
-                return Ok(());
+            println!("Cache: {}", dir.display());
+            let fingerprint = archives_fingerprint(&game_root)?;
+            for part in Parts::ALL.each() {
+                let path = dir.join(part.file_name());
+                let status = if !path.is_file() {
+                    "not built (built on first use)".to_string()
+                } else {
+                    let size = std::fs::metadata(&path)?.len();
+                    match GameIndex::load_part(&path, part, fingerprint) {
+                        Ok(Ok(index)) => format!("{size} bytes, current: {}", index.summary()),
+                        Ok(Err(Stale)) => format!("{size} bytes, stale (the game's archives changed; rebuilt on next use)"),
+                        Err(_) => format!("{size} bytes, from another version of rage (rebuilt on next use)"),
+                    }
+                };
+                println!("{:<10} {status}", part.name());
             }
-            let size = std::fs::metadata(&path)?.len();
-            let index = match GameIndex::load_cached(&path) {
-                Ok(index) => index,
-                Err(_) => {
-                    println!("Cache is from an older format — run `rage index build`.");
-                    return Ok(());
-                }
-            };
-            println!("Size: {size} bytes");
-            println!("{}", index.summary());
             Ok(())
         }
         IndexCommand::Clear => {
-            let Some(path) = cache_path else {
-                bail!("no cache directory available (no HOME/USERPROFILE?)");
-            };
-            if path.is_file() {
-                std::fs::remove_file(&path)?;
-                println!("Removed {}", path.display());
-            } else {
-                println!("Nothing to remove at {}", path.display());
+            let mut removed = 0;
+            let files = Parts::ALL.each().map(|p| p.file_name()).chain([LEGACY_FILE.to_string()]);
+            for name in files {
+                let path = dir.join(name);
+                if path.is_file() {
+                    std::fs::remove_file(&path)?;
+                    println!("Removed {}", path.display());
+                    removed += 1;
+                }
+            }
+            if removed == 0 {
+                println!("Nothing to remove in {}", dir.display());
             }
             Ok(())
         }

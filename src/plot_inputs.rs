@@ -11,7 +11,7 @@ use rage_formats::{
     rage_joaat, Drawable, MloInstance, Vec3, Ybn, YmapEntity, Ynv, Ytyp,
 };
 
-use crate::index::GameIndex;
+use crate::index::{GameIndex, Parts};
 use crate::rpf::GtaKeys;
 use crate::utils::walkdir;
 
@@ -386,7 +386,7 @@ fn add_archetype(name_or_hash: &str, keys: Option<&GtaKeys>, exe: Option<&Path>,
         None => rage_joaat(&name_or_hash.to_lowercase()),
     };
 
-    let Some(index) = GameIndex::load_or_build(exe, keys) else {
+    let Some(index) = GameIndex::load(exe, keys, Parts::INTERIORS) else {
         bail!(
             "'{name_or_hash}' is not a file or folder; resolving a vanilla interior by name needs \
              --exe or GTAV_PATH so the game index can be used"

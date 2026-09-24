@@ -113,9 +113,9 @@ pub struct BuildArgs {
     /// Directory whose file names (e.g. stream/ydr) name the archetype hashes in the report
     #[arg(long, value_name = "DIR")]
     pub names_from: Option<PathBuf>,
-    /// Also look unknown archetypes up in the game's texture index (needs
-    /// --exe and a built `rage index`), so vanilla props placed by the MLO
-    /// get their boxes too
+    /// Also look unknown archetypes up in the game's own archetypes (needs
+    /// --exe or GTAV_PATH), so vanilla props placed by the MLO get their
+    /// boxes too
     #[arg(long)]
     pub game_props: bool,
     /// A prop whose top is lower than this above the floor is stepped over, not blocked
@@ -153,7 +153,7 @@ pub fn run(args: &NavmeshArgs, keys: Option<&GtaKeys>, exe: Option<&Path>) -> Re
         NavmeshCommand::Cell(a) => run_cell(a, keys, exe),
         NavmeshCommand::Export(a) => run_export(a),
         NavmeshCommand::YbnObj(a) => run_ybn_obj(a),
-        NavmeshCommand::Build(a) => run_build(a, exe),
+        NavmeshCommand::Build(a) => run_build(a, keys, exe),
         NavmeshCommand::Rewrite(a) => run_rewrite(a),
         NavmeshCommand::Plot(_) => bail!("`navmesh plot` was replaced by `rage plot`; see `rage plot --help`"),
     }
@@ -421,7 +421,7 @@ fn run_ybn_obj(args: &YbnObjArgs) -> Result<()> {
 
 // ─── build ───────────────────────────────────────────────────────────────────
 
-fn run_build(args: &BuildArgs, exe: Option<&Path>) -> Result<()> {
+fn run_build(args: &BuildArgs, keys: Option<&GtaKeys>, exe: Option<&Path>) -> Result<()> {
     let data = std::fs::read(&args.cell).with_context(|| format!("reading {}", args.cell.display()))?;
     let mut cell = parse_ynv(&data)?;
     let before = cell.polys.len();
@@ -446,10 +446,8 @@ fn run_build(args: &BuildArgs, exe: Option<&Path>) -> Result<()> {
         let placement = placement.as_ref().context("--ytyp needs --ymap to place the MLO's props")?;
         let game_boxes = if args.game_props {
             let exe = exe.context("--game-props needs --exe or GTAV_PATH")?;
-            let exe_path = crate::keys::resolve_exe(exe)?;
-            let path = crate::index::GameIndex::cache_path(&exe_path).context("no cache directory (no HOME/USERPROFILE?)")?;
-            let index = crate::index::GameIndex::load_cached(&path)
-                .with_context(|| format!("--game-props needs the texture index at {}; run `rage index build` first", path.display()))?;
+            let index = crate::index::GameIndex::load(Some(exe), keys, crate::index::Parts::MODELS)
+                .context("--game-props: the game's archetypes could not be indexed")?;
             index.archetype_box
         } else {
             Default::default()

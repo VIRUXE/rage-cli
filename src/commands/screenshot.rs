@@ -5,7 +5,7 @@ use rage_formats::{encode_image, wheel_slot, DrawableEntry, ImageFormat, LodLeve
 use rage_render::{compose_sheet, render_parts, RenderOptions, RenderPart, SheetItem, SheetOptions,
                   TextureSet, View};
 
-use crate::index::GameIndex;
+use crate::index::{GameIndex, Parts};
 use crate::resources::{embedded_textures_of, file_stem, load_renderables, load_texture_dictionary, sanitize,
                        Loaded};
 use crate::rpf::{Archive, GtaKeys};
@@ -435,7 +435,7 @@ pub fn run(args: &ScreenshotArgs, keys: Option<&GtaKeys>, exe: Option<&std::path
         anyhow::bail!("'{}' holds no drawables", args.file);
     }
 
-    let index = if args.no_index { None } else { GameIndex::load_or_build(exe, keys) };
+    let index = if args.no_index { None } else { GameIndex::load(exe, keys, Parts::TEXTURES) };
     let mut textures = build_texture_set(&archive, args, &loaded, keys, index.as_ref());
     let mut resident_loaded: Vec<u32> = Vec::new();
 
