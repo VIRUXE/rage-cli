@@ -171,3 +171,23 @@ fn a_non_resource_positional_is_explained() {
     let err = fails(&["textures", s(&txt)]);
     assert!(err.contains("not a loose .ytd/.ydr/.ydd/.yft"), "{err}");
 }
+
+#[test]
+fn textures_whose_names_sanitise_alike_get_distinct_files() {
+    use rage_formats::{serialize_ytd, YtdTexture};
+    let tex = |name: &str| YtdTexture {
+        name: name.into(), name_hash: 0, width: 4, height: 4, depth: 1, format: TextureFormat::DXT1, levels: 1, stride: 2,
+        pixel_data: vec![0; 8],
+    };
+    let tmp = tempfile::tempdir().unwrap();
+    let ytd = tmp.path().join("car.ytd");
+    std::fs::write(&ytd, serialize_ytd(&[tex("mesh_spec"), tex("mesh spec")]).unwrap()).unwrap();
+    let out = tmp.path().join("out");
+    let output = rage(&["ytd", s(&ytd), "--dds", "-o", s(&out)]);
+    assert!(output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("is written as mesh_spec~2"), "{stderr}");
+    let mut files: Vec<String> = std::fs::read_dir(&out).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+    files.sort();
+    assert_eq!(files, ["mesh_spec.dds", "mesh_spec~2.dds"]);
+}

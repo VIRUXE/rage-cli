@@ -129,7 +129,30 @@ pub struct BuildArgs {
 /// A texture together with the name it should be exported under.
 struct Named<'a> {
     name: String,
+    /// The file stem to write under: the name made safe for a file system,
+    /// with a `~2`, `~3`... suffix when another texture sanitises to the same
+    /// stem (`mesh_spec` and `mesh spec` are different textures).
+    file: String,
     tex: &'a YtdTexture,
+}
+
+/// File stems for the textures, unique ignoring case (Windows file names).
+fn named_textures(textures: &[YtdTexture]) -> Vec<Named<'_>> {
+    let mut used: std::collections::HashSet<String> = std::collections::HashSet::new();
+    textures.iter().map(|tex| {
+        let name = texture_name(tex);
+        let base = sanitize(&name);
+        let mut file = base.clone();
+        let mut n = 1;
+        while !used.insert(file.to_lowercase()) {
+            n += 1;
+            file = format!("{base}~{n}");
+        }
+        if file != base {
+            eprintln!("note: '{name}' is written as {file} (another texture's file name is {base})");
+        }
+        Named { name, file, tex }
+    }).collect()
 }
 
 fn is_loose_resource(path: &Path) -> bool {
@@ -211,17 +234,17 @@ pub fn run(args: &TexturesArgs, keys: Option<&GtaKeys>) -> Result<()> {
     let out_dir = args.output.clone().unwrap_or_else(|| PathBuf::from(&stem));
     std::fs::create_dir_all(&out_dir)?;
 
-    let named: Vec<Named<'_>> = textures.iter().map(|tex| Named { name: texture_name(tex), tex }).collect();
+    let named = named_textures(&textures);
 
     let mut exported = 0usize;
     let mut failed = 0usize;
     let mut sheet_items: Vec<(String, image::RgbaImage, &YtdTexture)> = Vec::new();
 
-    for Named { name, tex } in &named {
+    for Named { name, file, tex } in &named {
         println!("{}", describe(name, tex));
 
         if args.dds {
-            let dds_path = out_dir.join(format!("{}.dds", sanitize(name)));
+            let dds_path = out_dir.join(format!("{file}.dds"));
             match std::fs::write(&dds_path, tex.to_dds()) {
                 Ok(()) => exported += 1,
                 Err(err) => {
@@ -243,7 +266,7 @@ pub fn run(args: &TexturesArgs, keys: Option<&GtaKeys>) -> Result<()> {
             }
 
             let encoded = encode_image(&img, args.format, args.quality)?;
-            let out_path = out_dir.join(format!("{}.{}", sanitize(name), args.format.extension()));
+            let out_path = out_dir.join(format!("{file}.{}", args.format.extension()));
             std::fs::write(&out_path, encoded)
                 .with_context(|| format!("failed to write {}", out_path.display()))?;
             Ok(())
