@@ -170,7 +170,7 @@ debug logging, `--no-update-check` to skip the daily release check.
 | `resource info <file> [--archive RPF] [--json] [--limit N] [--names FILE]...` | header plus a summary: every texture of a `.ytd`; bounds, LODs, geometry and shaders of a drawable; name, flags, extents and entity table of a `.ymap`; archetypes and interiors of a `.ytyp`; dependencies of a `_manifest.ymf` (PSO, RBF or XML) |
 | `resource dump <file> [--archive RPF] [--json] [-o FILE] [--names FILE]...` | any Meta or PSO file (`.ymap` `.ytyp` `.ymt` `.ymf` `.pso`) as XML in CodeWalker's layout, or as JSON |
 | `resource rename <file> <name> [--from NAME] [-o FILE] [--dry-run]` | change a name inside a file in place: a `.ymap`'s own name (the default), or any hash field or XML value equal to `--from`, in Meta, PSO and XML files |
-| `resource build <file.xml\|file.json> -o FILE [--format meta\|pso] [--schema FILE]... [--strict]` | the inverse of `dump`: a `.ymap`/`.ytyp`/`.ymt` (RSC7 Meta) or `_manifest.ymf`/`.pso` (PSO) from the XML or JSON, using CodeWalker's structure tables, or those of the original file with `--schema` |
+| `resource build <file.xml\|file.json> -o FILE [--format meta\|pso] [--schema FILE]... [--strict] [--no-recalc] [--ytyp PATH]...` | the inverse of `dump`: a `.ymap`/`.ytyp`/`.ymt` (RSC7 Meta) or `_manifest.ymf`/`.pso` (PSO) from the XML or JSON, using CodeWalker's structure tables, or those of the original file with `--schema` |
 | `names harvest \| fetch \| info \| lookup <term>...` | the hash-to-name list: build it from the game (`--exe` required), download a public one (`--build N` says what it covers), see where it is and which game build it covers, or hash a name / name a hash |
 | `textures <archive> <file> [-o DIR] [--format png\|jpg\|webp] [--sheet] [--max-size PX] [--dds]` | export a dictionary's textures, or the textures baked into a drawable, as images (alias `ytd`); a loose `.ytd`/`.ydr`/`.ydd`/`.yft` needs no archive |
 | `textures encode <image\|dir\|glob>... [-o FILE\|DIR] [--format bc1\|bc3\|bc4\|bc5\|bc7\|rgba8] [--mips auto\|N]` | PNG/TGA/JPG/WebP/BMP to DDS with a full mip chain: BC5 for `*_n` normal maps, BC3 with alpha, BC1 otherwise |
@@ -463,6 +463,20 @@ member the writer cannot fill is reported and left zero; `--strict` makes
 that an error. The result is read back before it is written, so what comes
 out is a file `dump` and CodeWalker agree on.
 
+A `.ymap` gets its `flags`, `contentFlags` and both extents boxes worked
+out from what it holds, the way CodeWalker does on save, so a moved entity
+never leaves the map streaming somewhere else. Each archetype's box comes
+from the `.ytyp` files of the resource the output lands in (the folder
+with the `fxmanifest.lua`), or the ones `--ytyp` names, then from the game
+(`--exe`/`GTAV_PATH`); interiors get the box CodeWalker computes from their
+rooms. An archetype found nowhere counts as a point and is named in a
+warning. The `SCRIPTED` and `Critical` bits are kept as given, and so are
+the extents of a map of LOD lights (their positions live in the parent
+map) or of an empty stub map. `--no-recalc` writes everything verbatim.
+For an interior rotated inside CodeWalker the boxes come out tighter than
+CodeWalker's, which applies that rotation twice; they still contain every
+entity.
+
 ### Inspect a resource file
 
 ```sh
@@ -537,6 +551,12 @@ ten seconds), or `rage names fetch` on a machine without the game (a public
 list, current to the build you pass with `--build`), to have vanilla props
 named. `--json` gives the whole entity list with positions, headings and
 flags; `--limit 0` lists every entity in text.
+
+An entity standing outside the map's stored extents is reported too: outside
+the streaming box, the game never loads the map where that entity is (a
+map edited by hand, or by a tool that does not recalculate). `resource dump`
+then `resource build` puts the boxes right; `--json` carries the counts as
+`entities_outside_extents` and `entities_outside_streaming_extents`.
 
 The game registers a map under its file name, while parent links and
 manifest `imapName` entries use the name inside the file. A `.ymap` renamed

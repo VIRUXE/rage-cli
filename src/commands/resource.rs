@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use rage_formats::{
     dump_meta, dump_metadata, parse_drawables, parse_ymap, parse_ymf, parse_ytd, parse_ytyp, prepare_rsc7, rage_joaat, set_map_name,
     resource_size_from_flags, resource_version_from_flags, to_json, to_xml, DrawableEntry, DrawableKind, Manifest,
-    MetaContainer, MetaDump, NameTable, Vec3, Ymap, YmapEntity, YmapHeader, Ytyp, YtdTexture, RSC7_MAGIC, RSC8_MAGIC,
+    MetaContainer, MetaDump, MetaStruct, MetaValue, NameTable, Vec3, Ymap, YmapEntity, YmapHeader, Ytyp, YtdTexture, RSC7_MAGIC, RSC8_MAGIC,
 };
 
 use crate::resources::load_resource_bytes;
@@ -59,6 +59,17 @@ pub struct BuildArgs {
     /// Treat any structure the writer could not fill as an error
     #[arg(long)]
     pub strict: bool,
+
+    /// Write a .ymap's flags, contentFlags and extents exactly as the input
+    /// gives them, instead of working them out from what the map holds
+    #[arg(long)]
+    pub no_recalc: bool,
+
+    /// .ytyp files (or folders of them) declaring the map's archetypes, for
+    /// the extents; default: every .ytyp in the output's resource folder,
+    /// then the game's own through the index (--exe / GTAV_PATH)
+    #[arg(long, value_name = "PATH")]
+    pub ytyp: Vec<PathBuf>,
 }
 
 #[derive(clap::Args)]
@@ -266,12 +277,12 @@ fn parse_contents(name: &str, data: &[u8], container: &Container) -> Result<Cont
     }
 }
 
-pub fn run(args: &ResourceArgs, keys: Option<&GtaKeys>, verbose: bool) -> Result<()> {
+pub fn run(args: &ResourceArgs, keys: Option<&GtaKeys>, exe: Option<&Path>, verbose: bool) -> Result<()> {
     match &args.command {
         ResourceCommand::Info(info) => run_info(info, keys, verbose),
         ResourceCommand::Dump(dump) => run_dump(dump, keys),
         ResourceCommand::Rename(rename) => run_rename(rename),
-        ResourceCommand::Build(build) => run_build(build),
+        ResourceCommand::Build(build) => run_build(build, keys, exe),
     }
 }
 
@@ -375,11 +386,11 @@ fn run_rename(args: &RenameArgs) -> Result<()> {
 }
 
 /// The file on disk whose siblings name the hashes, when the input is one.
-fn run_build(args: &BuildArgs) -> Result<()> {
+fn run_build(args: &BuildArgs, keys: Option<&GtaKeys>, exe: Option<&Path>) -> Result<()> {
     use rage_formats::{build_meta, build_pso, dump_meta, dump_pso, from_json, from_xml, Schema};
 
     let text = std::fs::read_to_string(&args.file).with_context(|| format!("failed to read '{}'", args.file.display()))?;
-    let value = if text.trim_start().starts_with('{') {
+    let mut value = if text.trim_start().starts_with('{') {
         from_json(&text).with_context(|| format!("'{}'", args.file.display()))?
     } else {
         from_xml(&text).with_context(|| format!("'{}'", args.file.display()))?
@@ -405,6 +416,13 @@ fn run_build(args: &BuildArgs) -> Result<()> {
         let own = Schema::from_file(&data).with_context(|| format!("'{}' as a schema source", path.display()))?;
         eprintln!("Using the structure definitions of {} ({} structures)", path.display(), own.meta_structs.len() + own.pso_structs.len());
         schema.merge(own);
+    }
+
+    if !args.no_recalc
+        && let MetaValue::Struct(map) = &mut value
+        && map.type_hash == rage_joaat("CMapData")
+    {
+        recalc_map(map, args, keys, exe)?;
     }
 
     let written = if format == "pso" { build_pso(&value, &schema)? } else { build_meta(&value, &schema)? };
@@ -437,6 +455,67 @@ fn run_build(args: &BuildArgs) -> Result<()> {
         names.resolve(root),
     );
     Ok(())
+}
+
+/// Works a map's flags and extents out from its contents (see
+/// `crate::extents`), with archetype bounds from `--ytyp`, the resource
+/// folder's own .ytyp files, and the game index for whatever is left.
+fn recalc_map(map: &mut MetaStruct, args: &BuildArgs, keys: Option<&GtaKeys>, exe: Option<&Path>) -> Result<()> {
+    use crate::extents;
+
+    let mut files = Vec::new();
+    let roots: Vec<PathBuf> = if args.ytyp.is_empty() { resource_root(&args.output).into_iter().collect() } else { args.ytyp.clone() };
+    for root in &roots {
+        if root.is_dir() {
+            files.extend(crate::utils::walkdir(root)?.into_iter().filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("ytyp"))));
+        } else if root.is_file() {
+            files.push(root.clone());
+        } else {
+            bail!("--ytyp {}: no such file or folder", root.display());
+        }
+    }
+    let lookup = extents::Lookup::new(&files, exe, keys);
+    let result = extents::calc(map, &|a| lookup.get(a));
+    let from_game = lookup.from_game.borrow().len();
+
+    let changes = extents::apply(map, &result);
+    let sources = match (files.len(), from_game) {
+        (0, 0) => String::new(),
+        (n, 0) => format!(" (archetypes from {n} .ytyp)"),
+        (0, g) => format!(" ({g} archetypes from the game)"),
+        (n, g) => format!(" (archetypes from {n} .ytyp, {g} from the game)"),
+    };
+    if changes.is_empty() {
+        eprintln!("Map flags and extents already match its contents{sources}");
+    } else {
+        eprintln!("Recalculated {}{sources}", changes.join(", "));
+    }
+    if let Some(why) = result.kept_because {
+        eprintln!("note: the extents are kept as given: {why}");
+    }
+    if !result.unbound.is_empty() {
+        let names = crate::names::load(&[], Some(&args.output))?;
+        let listed: Vec<String> = result.unbound.iter().take(8).map(|h| names.resolve(*h).into_owned()).collect();
+        let more = if result.unbound.len() > 8 { format!(" and {} more", result.unbound.len() - 8) } else { String::new() };
+        let hint = if exe.is_none() { "; pass --ytyp, or --exe / GTAV_PATH for vanilla archetypes" } else { "; pass --ytyp with the files that declare them" };
+        eprintln!(
+            "warning: no bounds for {} archetype(s): {}{more}; their entities count as points{hint}",
+            result.unbound.len(),
+            listed.join(", ")
+        );
+    }
+    Ok(())
+}
+
+/// The FiveM resource an output file lands in (the nearest folder up with
+/// an `fxmanifest.lua` or `__resource.lua`), else just its own folder.
+fn resource_root(output: &Path) -> Option<PathBuf> {
+    let dir = output.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    let dir = std::fs::canonicalize(dir).ok()?;
+    dir.ancestors()
+        .find(|d| d.join("fxmanifest.lua").is_file() || d.join("__resource.lua").is_file())
+        .map(Path::to_path_buf)
+        .or(Some(dir))
 }
 
 fn local_path(file: &str, archive: Option<&Path>) -> Option<PathBuf> {
@@ -684,6 +763,15 @@ fn write_map(out: &mut String, ymap: &Ymap, names: &NameTable, checks: &Checks, 
     if is_finite_box(h.entities_extents_min, h.entities_extents_max) && !ymap.entities.is_empty() {
         writeln!(out, "Extents:   {}..{}", fmt_vec3(h.entities_extents_min), fmt_vec3(h.entities_extents_max)).unwrap();
     }
+    let (outside, unstreamed) = crate::extents::strays(ymap);
+    if outside + unstreamed > 0 {
+        let what = match (outside, unstreamed) {
+            (_, 0) => format!("{outside} entities stand outside the entities extents"),
+            (0, _) => format!("{unstreamed} entities stand outside the streaming extents, so the game never loads the map where they are"),
+            _ => format!("{outside} entities stand outside the entities extents, {unstreamed} outside the streaming extents (the game never loads the map where those are)"),
+        };
+        writeln!(out, "           warning: {what}; `rage resource dump` then `resource build` recalculates both").unwrap();
+    }
     writeln!(out, "Entities:  {} ({} MLO instances)", ymap.entities.len(), ymap.mlo_instances.len()).unwrap();
     if ymap.entities.is_empty() {
         return;
@@ -923,6 +1011,7 @@ fn json_name(hash: u32, names: &NameTable) -> json::JsonValue {
 
 fn json_map(ymap: &Ymap, names: &NameTable, checks: &Checks) -> json::JsonValue {
     let h = &ymap.header;
+    let (outside, unstreamed) = crate::extents::strays(ymap);
     let entities: Vec<json::JsonValue> = ymap
         .entities
         .iter()
@@ -969,6 +1058,8 @@ fn json_map(ymap: &Ymap, names: &NameTable, checks: &Checks) -> json::JsonValue 
         content_flag_names: h.content_flag_names(),
         streaming_extents: json::array![json_vec(h.streaming_extents_min), json_vec(h.streaming_extents_max)],
         entities_extents: json::array![json_vec(h.entities_extents_min), json_vec(h.entities_extents_max)],
+        entities_outside_extents: outside,
+        entities_outside_streaming_extents: unstreamed,
         entities: entities,
         mlo_instances: instances,
     }

@@ -7,6 +7,7 @@ mod commands;
 mod navmesh;
 mod names;
 mod index;
+mod extents;
 mod keys;
 mod paths;
 mod plot_inputs;
@@ -207,7 +208,7 @@ fn dispatch(command: Commands, keys: Option<&GtaKeys>, exe: Option<&Path>, verbo
         Commands::Tree        { archive, depth }             => tree::run(&archive, depth, keys),
         Commands::Textures(args)                             => textures::run(&args, keys),
         Commands::Screenshot(args)                           => screenshot::run(&args, keys, exe),
-        Commands::Resource(args)                             => resource::run(&args, keys, verbose),
+        Commands::Resource(args)                             => resource::run(&args, keys, exe, verbose),
         Commands::Navmesh(args)                              => navmesh_cmd::run(&args, keys, exe),
         Commands::Plot(args)                                 => plot::run(&args, keys, exe),
         Commands::Update(args)                               => update_cmd::run(&args),

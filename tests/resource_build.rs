@@ -135,7 +135,7 @@ fn a_map_builds_from_xml_reads_back_and_its_name_can_be_fixed() {
     let xml = tmp.path().join("map.xml");
     std::fs::write(&xml, MAP_XML).unwrap();
     let original = tmp.path().join("map1.ymap");
-    let (_, stderr) = ok(&["resource", "build", s(&xml), "-o", s(&original)]);
+    let (_, stderr) = ok(&["resource", "build", "--no-recalc", s(&xml), "-o", s(&original)]);
     assert!(stderr.contains("Wrote") && stderr.contains("RSC7 Meta") && stderr.contains("root CMapData"), "{stderr}");
     assert!(!stderr.contains("warning"), "{stderr}");
 
@@ -153,7 +153,7 @@ fn a_map_builds_from_xml_reads_back_and_its_name_can_be_fixed() {
     let edited = tmp.path().join("edited.xml");
     std::fs::write(&edited, dump0.replacen("<name>map1</name>", "<name>casas_praia_extras</name>", 1)).unwrap();
     let built = tmp.path().join("casas_praia_extras.ymap");
-    ok(&["resource", "build", s(&edited), "-o", s(&built)]);
+    ok(&["resource", "build", "--no-recalc", s(&edited), "-o", s(&built)]);
     let (info, _) = ok(&["resource", "info", s(&built)]);
     assert!(info.contains("Map:       casas_praia_extras"), "{info}");
     assert!(!info.contains("calls itself"), "{info}");
@@ -167,7 +167,7 @@ fn json_builds_the_same_file_as_xml_and_the_original_can_supply_the_schema() {
     let xml = tmp.path().join("map.xml");
     std::fs::write(&xml, MAP_XML).unwrap();
     let original = tmp.path().join("map1.ymap");
-    ok(&["resource", "build", s(&xml), "-o", s(&original)]);
+    ok(&["resource", "build", "--no-recalc", s(&xml), "-o", s(&original)]);
     let (dump0, _) = ok(&["resource", "dump", s(&original)]);
 
     let json = tmp.path().join("map.json");
@@ -175,12 +175,12 @@ fn json_builds_the_same_file_as_xml_and_the_original_can_supply_the_schema() {
     // Same stem as the original, so the dump names the map the same way
     // (names resolve from sibling files; there is no name list here).
     let from_json = tmp.path().join("out").join("map1.ymap");
-    ok(&["resource", "build", s(&json), "-o", s(&from_json)]);
+    ok(&["resource", "build", "--no-recalc", s(&json), "-o", s(&from_json)]);
     let (dump1, _) = ok(&["resource", "dump", s(&from_json)]);
     assert_eq!(dump0, dump1);
 
     // --schema, and an existing output, take the definitions from the file.
-    let (_, stderr) = ok(&["resource", "build", s(&json), "-o", s(&from_json), "--schema", s(&original)]);
+    let (_, stderr) = ok(&["resource", "build", "--no-recalc", s(&json), "-o", s(&from_json), "--schema", s(&original)]);
     assert!(stderr.matches("Using the structure definitions of").count() == 2, "{stderr}");
     let (dump2, _) = ok(&["resource", "dump", s(&from_json)]);
     assert_eq!(dump0, dump2);
@@ -192,7 +192,7 @@ fn a_pso_manifest_builds_from_xml_and_from_its_own_dump() {
     let xml = tmp.path().join("manifest.xml");
     std::fs::write(&xml, MANIFEST_XML).unwrap();
     let built = tmp.path().join("stream").join("_manifest.ymf");
-    let (_, stderr) = ok(&["resource", "build", s(&xml), "-o", s(&built)]);
+    let (_, stderr) = ok(&["resource", "build", "--no-recalc", s(&xml), "-o", s(&built)]);
     assert!(stderr.contains("PSO from") && stderr.contains("root CPackFileMetaData"), "{stderr}");
     assert!(!stderr.contains("warning"), "{stderr}");
 
@@ -205,7 +205,7 @@ fn a_pso_manifest_builds_from_xml_and_from_its_own_dump() {
     let dumped = tmp.path().join("dumped.xml");
     std::fs::write(&dumped, &dump0).unwrap();
     let again = tmp.path().join("again.ymf");
-    ok(&["resource", "build", s(&dumped), "-o", s(&again)]);
+    ok(&["resource", "build", "--no-recalc", s(&dumped), "-o", s(&again)]);
     let (dump1, _) = ok(&["resource", "dump", s(&again)]);
     assert_eq!(dump0, dump1);
 
@@ -215,9 +215,9 @@ fn a_pso_manifest_builds_from_xml_and_from_its_own_dump() {
     let (sample_dump, _) = ok(&["resource", "dump", s(&sample)]);
     let sample_xml = tmp.path().join("sample.xml");
     std::fs::write(&sample_xml, &sample_dump).unwrap();
-    let err = fails(&["resource", "build", s(&sample_xml), "-o", s(&tmp.path().join("sample2.pso"))]);
+    let err = fails(&["resource", "build", "--no-recalc", s(&sample_xml), "-o", s(&tmp.path().join("sample2.pso"))]);
     assert!(err.contains("no PSO schema for the root"), "{err}");
-    ok(&["resource", "build", s(&sample_xml), "-o", s(&tmp.path().join("sample2.pso")), "--schema", s(&sample)]);
+    ok(&["resource", "build", "--no-recalc", s(&sample_xml), "-o", s(&tmp.path().join("sample2.pso")), "--schema", s(&sample)]);
     let (sample_dump2, _) = ok(&["resource", "dump", s(&tmp.path().join("sample2.pso"))]);
     assert_eq!(sample_dump, sample_dump2);
 }
@@ -227,23 +227,94 @@ fn the_container_comes_from_the_extension_or_format() {
     let tmp = tempfile::tempdir().unwrap();
     let xml = tmp.path().join("x.xml");
     std::fs::write(&xml, "<CMapData><name>a</name><flags value=\"0\"/></CMapData>").unwrap();
-    let err = fails(&["resource", "build", s(&xml), "-o", s(&tmp.path().join("x.bin"))]);
+    let err = fails(&["resource", "build", "--no-recalc", s(&xml), "-o", s(&tmp.path().join("x.bin"))]);
     assert!(err.contains("cannot tell the container"), "{err}");
-    let err = fails(&["resource", "build", s(&xml), "-o", s(&tmp.path().join("x.bin")), "--format", "rbf"]);
+    let err = fails(&["resource", "build", "--no-recalc", s(&xml), "-o", s(&tmp.path().join("x.bin")), "--format", "rbf"]);
     assert!(err.contains("expected meta or pso"), "{err}");
-    let (_, stderr) = ok(&["resource", "build", s(&xml), "-o", s(&tmp.path().join("x.bin")), "--format", "meta"]);
+    let (_, stderr) = ok(&["resource", "build", "--no-recalc", s(&xml), "-o", s(&tmp.path().join("x.bin")), "--format", "meta"]);
     assert!(stderr.contains("RSC7 Meta"), "{stderr}");
 
     // An unknown root structure is an error; a bad member is a warning
     // unless --strict.
     let bad = tmp.path().join("bad.xml");
     std::fs::write(&bad, "<NotAStructure><name>a</name></NotAStructure>").unwrap();
-    let err = fails(&["resource", "build", s(&bad), "-o", s(&tmp.path().join("bad.ymap"))]);
+    let err = fails(&["resource", "build", "--no-recalc", s(&bad), "-o", s(&tmp.path().join("bad.ymap"))]);
     assert!(err.contains("no schema for the root structure"), "{err}");
     let odd = tmp.path().join("odd.xml");
     std::fs::write(&odd, "<CMapData><name>a</name><flags value=\"many\"/></CMapData>").unwrap();
-    let (_, stderr) = ok(&["resource", "build", s(&odd), "-o", s(&tmp.path().join("odd.ymap"))]);
+    let (_, stderr) = ok(&["resource", "build", "--no-recalc", s(&odd), "-o", s(&tmp.path().join("odd.ymap"))]);
     assert!(stderr.contains("warning") && stderr.contains("is not a integer"), "{stderr}");
-    let err = fails(&["resource", "build", s(&odd), "-o", s(&tmp.path().join("odd.ymap")), "--strict"]);
+    let err = fails(&["resource", "build", "--no-recalc", s(&odd), "-o", s(&tmp.path().join("odd.ymap")), "--strict"]);
     assert!(err.contains("--strict"), "{err}");
+}
+
+/// A map's flags and extents follow its entities when it is built, with the
+/// archetype's box read from a .ytyp in the same resource.
+#[test]
+fn a_map_build_recalculates_its_extents_from_the_resource_ytyp() {
+    let tmp = tempfile::tempdir().unwrap();
+    let resource = tmp.path().join("res");
+    let stream = resource.join("stream");
+    std::fs::create_dir_all(&stream).unwrap();
+    std::fs::write(resource.join("fxmanifest.lua"), "fx_version 'cerulean'
+").unwrap();
+
+    let ytyp_xml = tmp.path().join("types.xml");
+    std::fs::write(
+        &ytyp_xml,
+        r#"<CMapTypes>
+  <extensions/>
+  <archetypes>
+    <Item type="CBaseArchetypeDef">
+      <lodDist value="80"/>
+      <flags value="0"/>
+      <specialAttribute value="0"/>
+      <bbMin x="-1" y="-2" z="0"/>
+      <bbMax x="1" y="2" z="3"/>
+      <bsCentre x="0" y="0" z="1.5"/>
+      <bsRadius value="3"/>
+      <hdTextureDist value="5"/>
+      <name>prop_gas_pump_1a</name>
+      <textureDictionary/>
+      <clipDictionary/>
+      <drawableDictionary/>
+      <physicsDictionary/>
+      <assetType>ASSET_TYPE_DRAWABLE</assetType>
+      <assetName>prop_gas_pump_1a</assetName>
+      <extensions/>
+    </Item>
+  </archetypes>
+  <name>types</name>
+  <dependencies/>
+  <compositeEntityTypes/>
+</CMapTypes>"#,
+    )
+    .unwrap();
+    ok(&["resource", "build", s(&ytyp_xml), "-o", s(&stream.join("types.ytyp"))]);
+
+    let xml = tmp.path().join("map.xml");
+    std::fs::write(&xml, MAP_XML).unwrap();
+    let map = stream.join("map1.ymap");
+    let (_, stderr) = ok(&["resource", "build", s(&xml), "-o", s(&map)]);
+    assert!(stderr.contains("Recalculated") && stderr.contains("1 .ytyp"), "{stderr}");
+    // The second entity's archetype is declared nowhere.
+    assert!(stderr.contains("no bounds for 1 archetype"), "{stderr}");
+
+    let (info, _) = ok(&["resource", "info", s(&map), "--json"]);
+    let v = json::parse(&info).unwrap();
+    let m = &v["map"];
+    // The pump at (197.263, 6573.081, 30.78), unrotated, box (-1,-2,0)..(1,2,3),
+    // lodDist 120; the other entity a point at (1, 2, 3) with lodDist 60.
+    let near = |a: &json::JsonValue, b: [f64; 3]| (0..3).all(|i| (a[i].as_f64().unwrap() - b[i]).abs() < 1e-3);
+    assert!(near(&m["entities_extents"][0], [1.0, 2.0, 3.0]), "{}", m["entities_extents"]);
+    assert!(near(&m["entities_extents"][1], [198.263, 6575.081, 33.78]), "{}", m["entities_extents"]);
+    assert!(near(&m["streaming_extents"][0], [-59.0, -58.0, -89.22]), "{}", m["streaming_extents"]);
+    assert!(near(&m["streaming_extents"][1], [318.263, 6695.081, 153.78]), "{}", m["streaming_extents"]);
+    assert_eq!(m["entities_outside_extents"], 0);
+
+    // --no-recalc keeps what the XML says, and info notices the stale box.
+    let stale = stream.join("stale.ymap");
+    ok(&["resource", "build", "--no-recalc", s(&xml), "-o", s(&stale)]);
+    let (info, _) = ok(&["resource", "info", s(&stale)]);
+    assert!(info.contains("1 entities stand outside the entities extents, 1 outside the streaming extents"), "{info}");
 }

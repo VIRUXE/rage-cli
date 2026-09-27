@@ -50,7 +50,7 @@ impl Parts {
     pub const TEXTURES: Parts = Parts(1);
     /// `mlo_ytyp`, `mlo_instances`, `ybn_by_name`.
     pub const INTERIORS: Parts = Parts(2);
-    /// `drawable_by_name`, `archetype_box`, `archetype_asset`.
+    /// `drawable_by_name`, `archetype_box`, `archetype_lod_dist`, `archetype_asset`.
     pub const MODELS: Parts = Parts(4);
     pub const ALL: Parts = Parts(7);
 
@@ -119,6 +119,10 @@ pub struct GameIndex {
     /// Archetype name hash -> its bounding box (`bbMin`, `bbMax`), from every
     /// .ytyp; what a placed prop occupies, for anything that reads placements.
     pub archetype_box: HashMap<u32, (Vec3, Vec3)>,
+    /// Archetype name hash -> its `lodDist`, from every .ytyp: how far out
+    /// a placement with no `lodDist` of its own stays visible, which is
+    /// what a map's streaming extents are grown by.
+    pub archetype_lod_dist: HashMap<u32, f32>,
     /// Texture name hash -> the name hash of the resident dictionary
     /// (`mapdetail`/`vehshare`) that holds it.
     pub resident_textures: HashMap<u32, u32>,
@@ -227,6 +231,7 @@ impl GameIndex {
         self.ytd_by_name.extend(later.ytd_by_name);
         self.archetype_txd.extend(later.archetype_txd);
         self.archetype_box.extend(later.archetype_box);
+        self.archetype_lod_dist.extend(later.archetype_lod_dist);
         self.resident_textures.extend(later.resident_textures);
         for (child, parent) in later.parent_txds {
             self.parent_txds.entry(child).or_insert(parent);
@@ -839,6 +844,7 @@ fn index_archive(archive: &Archive, archive_path: &Path, nested_rpfs: &[String],
                 }
                 if models {
                     out.index.archetype_box.insert(a.name_hash, (a.bb_min, a.bb_max));
+                    out.index.archetype_lod_dist.insert(a.name_hash, a.lod_dist);
                     let model = if a.in_drawable_dictionary() { a.drawable_dictionary_hash } else { a.model_hash() };
                     if a.in_drawable_dictionary() || a.is_fragment() || model != a.name_hash {
                         out.index.archetype_asset.insert(a.name_hash, (a.asset_type, model));
@@ -907,8 +913,8 @@ const MAGIC: u32 = 0x5850_4652; // "RPFX" little-endian
 // 6: every placement ymap is kept. 7: drawable locations and archetype
 // asset bindings.
 // 8: one file per part, each carrying the archives' fingerprint; entries
-// written in key order.
-const FORMAT_VERSION: u32 = 8;
+// written in key order. 9: archetype LOD distances.
+const FORMAT_VERSION: u32 = 9;
 
 fn write_u32(buf: &mut Vec<u8>, v: u32) {
     buf.extend_from_slice(&v.to_le_bytes());
@@ -991,6 +997,11 @@ fn encode_part(index: &GameIndex, part: Parts, fingerprint: u64) -> Vec<u8> {
                 write_u32(&mut buf, hash);
                 write_u32(&mut buf, *kind);
                 write_u32(&mut buf, *model);
+            }
+            write_u32(&mut buf, index.archetype_lod_dist.len() as u32);
+            for (hash, lod_dist) in sorted(&index.archetype_lod_dist) {
+                write_u32(&mut buf, hash);
+                buf.extend_from_slice(&lod_dist.to_le_bytes());
             }
         }
         _ => unreachable!("encode_part takes a single part"),
@@ -1125,6 +1136,13 @@ fn decode_part(data: &[u8], part: Parts) -> Result<(u64, GameIndex)> {
                 let model = c.u32()?;
                 index.archetype_asset.insert(hash, (kind, model));
             }
+            let (n, cap) = c.count()?;
+            index.archetype_lod_dist.reserve(cap);
+            for _ in 0..n {
+                let hash = c.u32()?;
+                let lod_dist = c.f32()?;
+                index.archetype_lod_dist.insert(hash, lod_dist);
+            }
         }
         _ => bail!("index: {} is not a single part", part.0),
     }
@@ -1162,6 +1180,7 @@ mod tests {
         index.ybn_by_name.insert(10, loc("v_int_3.ybn"));
         index.drawable_by_name.insert(11, loc("prop_x.ydr"));
         index.archetype_asset.insert(12, (3, 13));
+        index.archetype_lod_dist.insert(8, 150.0);
         index
     }
 
@@ -1186,6 +1205,7 @@ mod tests {
         assert_eq!(back.ybn_by_name, index.ybn_by_name);
         assert_eq!(back.drawable_by_name, index.drawable_by_name);
         assert_eq!(back.archetype_asset, index.archetype_asset);
+        assert_eq!(back.archetype_lod_dist, index.archetype_lod_dist);
     }
 
     #[test]
