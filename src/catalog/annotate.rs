@@ -191,7 +191,7 @@ pub fn import(cat: &mut Catalog, packet_path: &Path, responses_path: &Path, opts
 
     let mut summary = AnnotateSummary::default();
     let mut touched: Vec<i64> = Vec::new();
-    let tx = cat.conn.transaction()?;
+    let tx = cat.conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     for r in responses["tiles"].members() {
         let Some(tile) = r["tile"].as_i64() else {
             summary.rejected.push((-1, "a response without a tile number".into()));

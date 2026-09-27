@@ -146,7 +146,7 @@ pub fn embed_all(cat: &mut Catalog, opts: &EmbedOptions) -> Result<EmbedSummary>
     for chunk in todo.chunks(256) {
         let texts: Vec<String> = chunk.iter().map(|(_, t, _)| t.clone()).collect();
         let vectors = encoder.embed(&texts)?;
-        let tx = cat.conn.transaction()?;
+        let tx = cat.conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         {
             let mut put = tx.prepare_cached(
                 "INSERT INTO embeddings(item_id, corpus, encoder, dims, text_sha256, vector) VALUES (?1, 'combined', ?2, ?3, ?4, ?5)

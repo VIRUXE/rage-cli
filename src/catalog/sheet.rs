@@ -242,7 +242,7 @@ pub fn make_packet(cat: &mut Catalog, keys: Option<&GtaKeys>, items: Vec<ItemVie
     let created = now_secs();
     let missing_total: usize = ordered.iter().map(|t| t.missing.len()).sum();
     {
-        let tx = cat.conn.transaction()?;
+        let tx = cat.conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         tx.execute("DELETE FROM packets WHERE packet_id = ?1", [&pid])?;
         tx.execute(
             "INSERT INTO packets(packet_id, created, game_build, query, filters, views, cell, out_dir, sheets, tiles)

@@ -285,7 +285,7 @@ pub fn import(cat: &mut Catalog, keys: Option<&GtaKeys>, path: &Path) -> Result<
         staged.push((a, matched.map(|m| m.1).unwrap_or(false)));
     }
 
-    let tx = cat.conn.transaction()?;
+    let tx = cat.conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     let mut touched: Vec<i64> = Vec::new();
     for (a, exact) in &staged {
         match insert(&tx, a, false)?.0 {
@@ -338,7 +338,7 @@ pub fn rematch(cat: &mut Catalog, keys: Option<&GtaKeys>) -> Result<usize> {
         };
         updates.push((ann, item, changed));
     }
-    let tx = cat.conn.transaction()?;
+    let tx = cat.conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     let mut touched = Vec::new();
     for (ann, item, changed) in &updates {
         tx.execute("UPDATE annotations SET item_id = ?2 WHERE id = ?1", params![ann, item])?;

@@ -11,6 +11,10 @@ use std::path::Path;
 pub const SCHEMA_VERSION: i64 = 1;
 
 pub fn configure(conn: &Connection) -> Result<()> {
+    // Several rage processes may write one catalogue at once (parallel
+    // `annotate` runs from a review batch); wait for the lock instead of
+    // failing with "database is locked".
+    conn.busy_timeout(std::time::Duration::from_secs(60))?;
     conn.execute_batch(
         "PRAGMA journal_mode = WAL;
          PRAGMA synchronous = NORMAL;

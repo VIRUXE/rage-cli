@@ -247,7 +247,7 @@ pub fn build(cat: &mut Catalog, keys: Option<&GtaKeys>, opts: &BuildOptions) -> 
     let mut plans: Vec<ArchivePlan> = Vec::new();
     let mut rank_changed = false;
     {
-        let tx = cat.conn.transaction()?;
+        let tx = cat.conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         for (rank, path) in ranked.iter().enumerate() {
             let key = path.to_string_lossy().to_string();
             let rel = rel_path(&opts.game_root, path);
@@ -352,7 +352,7 @@ pub fn build(cat: &mut Catalog, keys: Option<&GtaKeys>, opts: &BuildOptions) -> 
                     summary.failures.push(f.clone());
                 }
             }
-            let tx = cat.conn.transaction()?;
+            let tx = cat.conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
             write_archive(&tx, &scan)?;
             tx.commit()?;
         }
@@ -1088,7 +1088,7 @@ fn write_archive(tx: &Transaction, scan: &ArchiveScan) -> Result<()> {
 /// Marks the copy of each asset the game actually loads: the one in the
 /// latest-loading archive. Entries and textures inherit their container's.
 fn winner_pass(cat: &mut Catalog) -> Result<()> {
-    let tx = cat.conn.transaction()?;
+    let tx = cat.conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     tx.execute_batch(
         "UPDATE items SET winner = 0 WHERE winner <> 0;
          UPDATE items SET winner = 1 WHERE id IN (
@@ -1125,7 +1125,7 @@ fn names_pass(cat: &mut Catalog, names: &NameTable) -> Result<usize> {
         stmt.query_map([], |r| Ok((r.get(0)?, r.get::<_, i64>(1)? as u32)))?
             .collect::<rusqlite::Result<_>>()?
     };
-    let tx = cat.conn.transaction()?;
+    let tx = cat.conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     let mut named = 0;
     {
         let mut set_name = tx.prepare_cached("UPDATE items SET name = ?2 WHERE id = ?1")?;

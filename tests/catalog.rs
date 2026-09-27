@@ -438,3 +438,49 @@ fn reviews_survive_a_rescan_of_their_archive() {
     build(&game, &db);
     assert_eq!(search_json(&db, &["traffic", "cone"])["results"].len(), before);
 }
+
+#[test]
+fn parallel_imports_wait_for_each_other() {
+    let dir = tempfile::tempdir().unwrap();
+    let (game, db) = game(dir.path());
+    build(&game, &db);
+    let (out, _, template) = sheet(&db, dir.path());
+    let mut responses = template.clone();
+    for t in responses["tiles"].members_mut() {
+        t["description"] = "a plain test object".into();
+    }
+    let rpath = out.join("responses.json");
+    std::fs::write(&rpath, responses.dump()).unwrap();
+    let packet = out.join("packet.json");
+
+    // Several rage processes writing one catalogue at once must queue on the
+    // lock, not fail with "database is locked".
+    let children: Vec<_> = (0..8)
+        .map(|_| {
+            Command::new(env!("CARGO_BIN_EXE_rage"))
+                .args(["catalog", "--db", s(&db), "annotate", "--packet", s(&packet), "--responses", s(&rpath)])
+                .env("RAGE_NO_UPDATE_CHECK", "1")
+                .env("RAGE_NAMES", "/nonexistent/names.txt")
+                .output_async()
+        })
+        .collect();
+    let mut imported = 0;
+    for child in children {
+        let output = child.wait_with_output().unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        if String::from_utf8_lossy(&output.stdout).starts_with("Imported") && !String::from_utf8_lossy(&output.stdout).starts_with("Imported 0") {
+            imported += 1;
+        }
+    }
+    assert_eq!(imported, 1, "exactly one import adds rows; the rest are duplicates");
+}
+
+trait OutputAsync {
+    fn output_async(&mut self) -> std::process::Child;
+}
+
+impl OutputAsync for Command {
+    fn output_async(&mut self) -> std::process::Child {
+        self.stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn().unwrap()
+    }
+}
