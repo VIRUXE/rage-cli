@@ -1,4 +1,4 @@
-//! `rpf update` CLI wiring — help output and argument parsing only. Nothing
+//! `rage update` CLI wiring — help output and argument parsing only. Nothing
 //! here may call the GitHub API: `update check`/`update install` are live
 //! network calls and are exercised manually, not in the test suite.
 

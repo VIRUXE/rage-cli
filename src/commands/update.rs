@@ -60,23 +60,23 @@ fn run_check(json: bool) -> Result<()> {
             json_string(current), json_string(&latest), available, json_string(&url),
         );
     } else if available {
-        println!("rpf {current} -> {latest} is available");
+        println!("rage {current} -> {latest} is available");
         println!("{url}");
         println!("Run `rage update install` to upgrade.");
     } else {
-        println!("rpf {current} is the latest release");
+        println!("rage {current} is the latest release");
     }
     Ok(())
 }
 
 fn run_install(yes: bool, force: bool) -> Result<()> {
     let Some(plan) = update::plan_update(force)? else {
-        println!("rpf {} is already the latest release", update::current_version());
+        println!("rage {} is already the latest release", update::current_version());
         return Ok(());
     };
 
     if !yes && std::io::stderr().is_terminal() {
-        eprint!("Update rpf {} -> {}? [y/N] ", plan.current, plan.latest);
+        eprint!("Update rage {} -> {}? [y/N] ", plan.current, plan.latest);
         let _ = std::io::stderr().flush();
 
         let mut answer = String::new();

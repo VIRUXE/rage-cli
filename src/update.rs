@@ -2,7 +2,7 @@
 //!
 //! Two independent things live here: a passive daily check that main() spawns
 //! on a background thread and reports after the real command has run, and the
-//! `plan_update`/`install` pair that `rpf update install` drives directly.
+//! `plan_update`/`install` pair that `rage update install` drives directly.
 //! Everything here is silent on failure except through `log::debug!` — an
 //! update check must never break or even slow down an unrelated command.
 
@@ -204,7 +204,7 @@ pub fn plan_update(force: bool) -> Result<Option<Plan>> {
             release.tag,
         ))?;
     let sums_url = release.assets.iter().find(|(name, _)| name == "SHA256SUMS").map(|(_, url)| url.clone())
-        .context("this release has no SHA256SUMS asset; rpf update only installs releases published with checksums")?;
+        .context("this release has no SHA256SUMS asset; rage update only installs releases published with checksums")?;
 
     let target = std::env::current_exe()
         .context("locating the running binary")?
@@ -335,7 +335,7 @@ fn store_stamp(p: &Path, s: &Stamp) {
     }
 }
 
-/// Records the result of an explicit `rpf update check`, resetting the daily
+/// Records the result of an explicit `rage update check`, resetting the daily
 /// clock the same way a background check would.
 pub fn record_check(latest: &str, etag: Option<&str>) {
     let Some(path) = stamp_path() else { return };
@@ -344,7 +344,7 @@ pub fn record_check(latest: &str, etag: Option<&str>) {
 }
 
 fn note(latest: &str) -> String {
-    format!("note: rpf {latest} is available (you have {}) — run `rpf update install` to upgrade", current_version())
+    format!("note: rage {latest} is available (you have {}) — run `rage update install` to upgrade", current_version())
 }
 
 /// Kicks off the daily check on a background thread when it is due and not
@@ -427,6 +427,14 @@ pub fn report_background_check(rx: Option<Receiver<String>>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_update_notice_names_the_rage_command() {
+        let note = note("9.9.9");
+        assert!(note.starts_with("note: rage 9.9.9 is available"), "{note}");
+        assert!(note.contains("`rage update install`"), "{note}");
+        assert!(!note.contains("rpf"), "{note}");
+    }
 
     #[test]
     fn parses_versions() {
