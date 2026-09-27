@@ -50,7 +50,8 @@ impl Parts {
     pub const TEXTURES: Parts = Parts(1);
     /// `mlo_ytyp`, `mlo_instances`, `ybn_by_name`.
     pub const INTERIORS: Parts = Parts(2);
-    /// `drawable_by_name`, `archetype_box`, `archetype_lod_dist`, `archetype_asset`.
+    /// `drawable_by_name`, `archetype_box`, `archetype_lod_dist`, `archetype_asset`,
+    /// `archetype_ytyp`, `ytyp_names`.
     pub const MODELS: Parts = Parts(4);
     pub const ALL: Parts = Parts(7);
 
@@ -150,6 +151,13 @@ pub struct GameIndex {
     /// `.ydr`/`.yft` named by the model hash. Only kept when it differs
     /// from the archetype's own name, which is the common case's default.
     pub archetype_asset: HashMap<u32, (u32, u32)>,
+    /// Archetype name hash -> `joaat(lowercase stem)` of the `.ytyp` that
+    /// declares it; later archives win. What a `_manifest.ymf` lists as a
+    /// map's `itypDepArray`.
+    pub archetype_ytyp: HashMap<u32, u32>,
+    /// `joaat(lowercase stem)` -> the lowercase stem, for every `.ytyp`
+    /// `archetype_ytyp` names.
+    pub ytyp_names: HashMap<u32, String>,
 }
 
 const RESIDENT_DICTS: [&str; 2] = ["mapdetail", "vehshare"];
@@ -245,6 +253,8 @@ impl GameIndex {
         self.ybn_by_name.extend(later.ybn_by_name);
         self.drawable_by_name.extend(later.drawable_by_name);
         self.archetype_asset.extend(later.archetype_asset);
+        self.archetype_ytyp.extend(later.archetype_ytyp);
+        self.ytyp_names.extend(later.ytyp_names);
     }
 
     /// Reads the raw bytes of an already-located entry, descending through
@@ -841,6 +851,10 @@ fn index_archive(archive: &Archive, archive_path: &Path, nested_rpfs: &[String],
             // Every part reads archetypes, so every build decodes these.
             let Ok(data) = archive.extract(file, keys) else { continue };
             let Ok(ytyp) = parse_ytyp(&data) else { continue };
+            let ytyp_hash = rage_joaat(&stem);
+            if models {
+                out.index.ytyp_names.insert(ytyp_hash, stem.to_string());
+            }
             for a in ytyp.archetypes {
                 if textures && a.texture_dict_hash != 0 {
                     out.index.archetype_txd.insert(a.name_hash, a.texture_dict_hash);
@@ -851,6 +865,7 @@ fn index_archive(archive: &Archive, archive_path: &Path, nested_rpfs: &[String],
                 if models {
                     out.index.archetype_box.insert(a.name_hash, (a.bb_min, a.bb_max));
                     out.index.archetype_lod_dist.insert(a.name_hash, a.lod_dist);
+                    out.index.archetype_ytyp.insert(a.name_hash, ytyp_hash);
                     let model = if a.in_drawable_dictionary() { a.drawable_dictionary_hash } else { a.model_hash() };
                     if a.in_drawable_dictionary() || a.is_fragment() || model != a.name_hash {
                         out.index.archetype_asset.insert(a.name_hash, (a.asset_type, model));
@@ -920,7 +935,7 @@ const MAGIC: u32 = 0x5850_4652; // "RPFX" little-endian
 // asset bindings.
 // 8: one file per part, each carrying the archives' fingerprint; entries
 // written in key order. 9: archetype LOD distances.
-const FORMAT_VERSION: u32 = 9;
+const FORMAT_VERSION: u32 = 10;
 
 fn write_u32(buf: &mut Vec<u8>, v: u32) {
     buf.extend_from_slice(&v.to_le_bytes());
@@ -1008,6 +1023,12 @@ fn encode_part(index: &GameIndex, part: Parts, fingerprint: u64) -> Vec<u8> {
             for (hash, lod_dist) in sorted(&index.archetype_lod_dist) {
                 write_u32(&mut buf, hash);
                 buf.extend_from_slice(&lod_dist.to_le_bytes());
+            }
+            write_pairs(&mut buf, &index.archetype_ytyp);
+            write_u32(&mut buf, index.ytyp_names.len() as u32);
+            for (hash, name) in sorted(&index.ytyp_names) {
+                write_u32(&mut buf, hash);
+                write_str(&mut buf, name);
             }
         }
         _ => unreachable!("encode_part takes a single part"),
@@ -1149,6 +1170,13 @@ fn decode_part(data: &[u8], part: Parts) -> Result<(u64, GameIndex)> {
                 let lod_dist = c.f32()?;
                 index.archetype_lod_dist.insert(hash, lod_dist);
             }
+            index.archetype_ytyp = read_pairs(&mut c)?;
+            let (n, cap) = c.count()?;
+            index.ytyp_names.reserve(cap);
+            for _ in 0..n {
+                let hash = c.u32()?;
+                index.ytyp_names.insert(hash, c.string()?);
+            }
         }
         _ => bail!("index: {} is not a single part", part.0),
     }
@@ -1187,6 +1215,8 @@ mod tests {
         index.drawable_by_name.insert(11, loc("prop_x.ydr"));
         index.archetype_asset.insert(12, (3, 13));
         index.archetype_lod_dist.insert(8, 150.0);
+        index.archetype_ytyp.insert(8, 14);
+        index.ytyp_names.insert(14, "v_minimap".to_string());
         index
     }
 
@@ -1212,6 +1242,8 @@ mod tests {
         assert_eq!(back.drawable_by_name, index.drawable_by_name);
         assert_eq!(back.archetype_asset, index.archetype_asset);
         assert_eq!(back.archetype_lod_dist, index.archetype_lod_dist);
+        assert_eq!(back.archetype_ytyp, index.archetype_ytyp);
+        assert_eq!(back.ytyp_names, index.ytyp_names);
     }
 
     #[test]

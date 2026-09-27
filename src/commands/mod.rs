@@ -14,3 +14,4 @@ pub mod navmesh;
 pub mod plot;
 pub mod names;
 pub mod ytyp;
+pub mod manifest;

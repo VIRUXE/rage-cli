@@ -172,6 +172,7 @@ debug logging, `--no-update-check` to skip the daily release check.
 | `resource rename <file> <name> [--from NAME] [-o FILE] [--dry-run]` | change a name inside a file in place: a `.ymap`'s own name (the default), or any hash field or XML value equal to `--from`, in Meta, PSO and XML files |
 | `resource build <file.xml\|file.json> -o FILE [--format meta\|pso] [--schema FILE]... [--strict] [--no-recalc] [--ytyp PATH]...` | the inverse of `dump`: a `.ymap`/`.ytyp`/`.ymt` (RSC7 Meta) or `_manifest.ymf`/`.pso` (PSO) from the XML or JSON, using CodeWalker's structure tables, or those of the original file with `--schema` |
 | `ytyp from-drawables <file\|dir>... -o FILE.ytyp [--txd NAME] [--lod-dist N] [--hd-dist N] [--flags N] [--merge FILE]` | a type file declaring an archetype for every `.ydr`, `.ydd` entry and `.yft`, with the bounds read from the model, as CodeWalker's "New Archetype from YDR" does; `--merge` adds to an existing `.ytyp` |
+| `manifest generate <folder> [-o FILE] [--format pso\|xml]` | a resource's `_manifest.ymf` worked out from its `.ymap` and `.ytyp` files, as CodeWalker's project "Generate manifest" writes it: each map's type-file dependencies, interior flags, each interior's own dependencies and collision entry |
 | `names harvest \| fetch \| info \| lookup <term>...` | the hash-to-name list: build it from the game (`--exe` required), download a public one (`--build N` says what it covers), see where it is and which game build it covers, or hash a name / name a hash |
 | `textures <archive> <file> [-o DIR] [--format png\|jpg\|webp] [--sheet] [--max-size PX] [--dds]` | export a dictionary's textures, or the textures baked into a drawable, as images (alias `ytd`); a loose `.ytd`/`.ydr`/`.ydd`/`.yft` needs no archive |
 | `textures encode <image\|dir\|glob>... [-o FILE\|DIR] [--format bc1\|bc3\|bc4\|bc5\|bc7\|rgba8] [--mips auto\|N]` | PNG/TGA/JPG/WebP/BMP to DDS with a full mip chain: BC5 for `*_n` normal maps, BC3 with alpha, BC1 otherwise |
@@ -498,6 +499,29 @@ name, if there is one). A `.yft` gives one fragment archetype, and a
 vehicle's `_hi.yft` is skipped next to its `.yft`. Escrow-encrypted
 models are skipped with a warning. `--merge` keeps the archetypes of an
 existing `.ytyp` and replaces those given again.
+
+### Generate a resource's manifest
+
+```sh
+rage manifest generate my_mlo/                  # writes my_mlo/stream/_manifest.ymf
+rage manifest generate my_mlo/ --format xml     # CodeWalker's XML on stdout, to read or edit
+```
+
+A map whose entities come from a custom `.ytyp`, or that places an
+interior, needs a `_manifest.ymf` saying so, or the game may stream the map
+before the types it uses. `manifest generate` reads every `.ymap` and
+`.ytyp` under the folder and writes what CodeWalker's project window
+generates, in the same order: for each map, the type files declaring its
+entities', interiors' and grass batches' archetypes (flagged
+`INTERIOR_DATA` when it places an interior); for each interior's type file,
+the other type files its rooms and entity sets use; and for each interior,
+its collision entry. An archetype is looked up in the folder's own type
+files first, then in the game's through the index (`--exe` / `GTAV_PATH`),
+so props from DLC resolve too. Where the game declares an archetype twice,
+the one loaded last wins, as in the game; CodeWalker with DLC turned off
+names the base-game file instead. Archetypes found nowhere are listed in a
+warning. Escrow-encrypted files are skipped, and an existing manifest is
+replaced.
 
 ### Inspect a resource file
 
@@ -888,7 +912,7 @@ per part, and each command loads only the part it uses:
 |---|---|---|
 | `textures.bin` | texture dictionaries by name, each archetype's dictionary, the parent chain, the resident dictionaries' textures | `screenshot` |
 | `interiors.bin` | which `.ytyp` declares each interior, the `.ymap`s that place it, collision files by name | `plot <interior name>` |
-| `models.bin` | model files by name, each archetype's box and model file | `plot` props, `navmesh build --game-props` |
+| `models.bin` | model files by name, each archetype's box, model file and `.ytyp` | `plot` props, `navmesh build --game-props`, `resource build` extents, `manifest generate` |
 
 A missing part is built on first use. A part written for other archives,
 after a game update or a mod, is rebuilt on the next use without being asked.
@@ -929,6 +953,7 @@ src/
     plot.rs          `plot`: placement, MLO-vs-world-space meshes, room-box estimation, exterior entities, the caption
     resource.rs      `resource info`/`dump`: container detection, per-format summaries, XML/JSON dumps
     names.rs         `names`: harvesting the game's names, lookups
+    manifest.rs      `manifest generate`: a _manifest.ymf from a folder's maps and type files, CodeWalker's layout
   plot_inputs.rs     turning plot's free-form inputs (files, a resource folder, a vanilla name) into parsed sources
   props.rs           what to draw for a placed entity: a folder model, a game model through the index, a box, or nothing
   names.rs           the name table `resource` prints through: built-in, harvested, `--names`, sibling file stems
