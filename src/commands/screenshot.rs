@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use rage_formats::{encode_image, rage_joaat, wheel_slot, DrawableEntry, ImageFormat, LodLevel};
 use rage_render::{compose_sheet, render_parts, RenderOptions, RenderPart, SheetItem, SheetOptions,
-                  TextureSet, View};
+                  TextureSet, View, Facing};
 
 use crate::index::{GameIndex, Parts};
 use crate::peds::{self, SlotChoice};
@@ -68,9 +68,16 @@ pub struct ScreenshotArgs {
     #[arg(long, value_name = "NAME|PATH")]
     pub ytd: Vec<String>,
 
-    /// Views to render: front, back, left, right, top, iso (comma separated)
+    /// Views to render: front, back, left, right, top, iso, or any angle as
+    /// AZIMUTH:ELEVATION in degrees from the model's front (0:0 front, 90:0
+    /// its right side, 180:0 back, 0:90 straight down), comma separated
     #[arg(long, value_delimiter = ',', default_value = "iso")]
     pub views: Vec<View>,
+
+    /// Which way the model faces, for front/back/left/right and angles:
+    /// vehicle (+Y), prop (-Y), or auto (vehicle shaders mean +Y)
+    #[arg(long, default_value = "auto", value_parser = parse_facing, value_name = "FACING")]
+    pub facing: Facing,
 
     /// Image size as WxH
     #[arg(long, default_value = "1024x1024", value_parser = parse_size)]
@@ -237,6 +244,16 @@ fn image_file_name(stem: &str, entry: Option<&str>, view: Option<&str>, ext: &st
 
 /// The views to render, each once, in the order first asked for; nothing
 /// asked for means the default iso view.
+/// `auto`, `vehicle`/`+y` or `prop`/`-y`.
+pub(crate) fn parse_facing(s: &str) -> std::result::Result<Facing, String> {
+    match s.to_ascii_lowercase().as_str() {
+        "auto" => Ok(Facing::Auto),
+        "vehicle" | "+y" | "y" => Ok(Facing::PositiveY),
+        "prop" | "-y" => Ok(Facing::NegativeY),
+        other => Err(format!("unknown facing '{other}' (auto, vehicle or prop)")),
+    }
+}
+
 pub(crate) fn unique_views(views: &[View]) -> Vec<View> {
     let mut unique: Vec<View> = Vec::with_capacity(views.len());
     for view in views {
@@ -657,6 +674,7 @@ fn render_all(
         vertex_colors: args.vertex_colors,
         paint,
         cluster_framing: !args.no_cluster_framing,
+        facing: args.facing,
         ..Default::default()
     };
 
@@ -708,7 +726,8 @@ fn render_all(
         let entry_part = many_entries.then(|| label.as_str());
 
         for (view, image, _) in &rendered {
-            let view_part = many_views.then(|| view.label());
+            let view_label = view.label();
+            let view_part = many_views.then_some(view_label.as_ref());
             let file_name = image_file_name(stem, entry_part, view_part, ext);
             let path = out_dir.join(&file_name);
             let encoded = encode_image(image, args.format, QUALITY)?;
@@ -799,7 +818,7 @@ mod tests {
     fn parts_follow_the_flags() {
         let base = || ScreenshotArgs {
             archive: None, file: None, ped: None, component: vec![], vehicle: None, hi: false, livery: None, colour_from: None,
-            output: None, ytd: vec![], views: vec![], size: (1, 1), grid: false, lod: LodLevel::High, format: ImageFormat::Png,
+            output: None, ytd: vec![], views: vec![], facing: rage_render::Facing::Auto, size: (1, 1), grid: false, lod: LodLevel::High, format: ImageFormat::Png,
             background: [0; 4], cull: false, vertex_colors: false, entry: None, paint: None, no_index: false, no_cluster_framing: false,
         };
         assert_eq!(parts_needed(&base()), Parts::TEXTURES);

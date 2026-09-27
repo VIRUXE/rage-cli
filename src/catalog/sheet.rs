@@ -27,6 +27,7 @@ use crate::rpf::GtaKeys;
 
 pub struct SheetOptions {
     pub views: Vec<View>,
+    pub facing: rage_render::Facing,
     pub per_sheet: usize,
     pub cell: u32,
     pub out_dir: PathBuf,
@@ -295,7 +296,7 @@ pub fn make_packet(cat: &mut Catalog, keys: Option<&GtaKeys>, items: Vec<ItemVie
         created: created,
         game_build: game_build.clone(),
         db: cat.path.to_string_lossy().to_string(),
-        views: opts.views.iter().map(|v| v.label()).collect::<Vec<_>>(),
+        views: opts.views.iter().map(|v| v.label().into_owned()).collect::<Vec<_>>(),
         cell: opts.cell,
         sheets: sheets_json,
         instructions: INSTRUCTIONS,
@@ -373,7 +374,7 @@ fn model_tile(
     .with_context(|| format!("nothing drawable for {}", item.label()))?;
 
     let embedded: Vec<YtdTexture> = embedded_textures_of(loaded.drawables()).into_iter().cloned().collect();
-    let options = RenderOptions { width: opts.cell, height: opts.cell, view: opts.views[0], cluster_framing: true, ..Default::default() };
+    let options = RenderOptions { width: opts.cell, height: opts.cell, view: opts.views[0], cluster_framing: true, facing: opts.facing, ..Default::default() };
     let set = texture_set_for(cat, loader, txds, shared, order, &embedded)?;
     let mut rendered = render_parts(&chosen.parts, &set, &options, &opts.views)?;
     let mut missing = rendered.first().map(|r| r.2.missing_textures.clone()).unwrap_or_default();

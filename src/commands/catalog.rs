@@ -145,9 +145,14 @@ pub struct SheetArgs {
     #[arg(short, long, value_name = "DIR", required_unless_present = "reveal")]
     pub output: Option<PathBuf>,
 
-    /// Views per model tile: front, back, left, right, top, iso (comma-separated)
+    /// Views per model tile: front, back, left, right, top, iso, or
+    /// AZIMUTH:ELEVATION in degrees from the model's front (comma-separated)
     #[arg(long, value_delimiter = ',', default_value = "front,iso,top", value_name = "VIEWS")]
     pub views: Vec<String>,
+
+    /// Which way models face: vehicle (+Y), prop (-Y), or auto (vehicle shaders mean +Y)
+    #[arg(long, default_value = "auto", value_parser = crate::commands::screenshot::parse_facing, value_name = "FACING")]
+    pub facing: rage_render::Facing,
 
     /// Tiles per sheet
     #[arg(long, default_value = "16", value_name = "N")]
@@ -568,6 +573,7 @@ fn run_sheet(args: &SheetArgs, db: &Path, keys: Option<&GtaKeys>) -> Result<()> 
     }
     let opts = sheet::SheetOptions {
         views,
+        facing: args.facing,
         per_sheet: args.per_sheet,
         cell: args.cell,
         out_dir,

@@ -225,7 +225,7 @@ debug logging, `--no-update-check` to skip the daily release check.
 
 | Command | Does |
 |---|---|
-| `screenshot <archive> <file> [--views ...] [--grid] [--ytd NAME]... [--paint #rrggbb] [--background ...] [--size WxH] [--lod ...] [--entry ...]` | render a `.ydr`/`.ydd`/`.yft` from up to six fixed angles, textures resolved from the file, `--ytd` and the index |
+| `screenshot <archive> <file> [--views ...] [--facing auto\|vehicle\|prop] [--grid] [--ytd NAME]... [--paint #rrggbb] [--background ...] [--size WxH] [--lod ...] [--entry ...]` | render a `.ydr`/`.ydd`/`.yft` from the six named views or any `AZIMUTH:ELEVATION` angle, textures resolved from the file, `--ytd` and the index |
 | `screenshot --vehicle NAME [--hi] [--livery N] [--colour-from carcols[:C]]` (also with `<archive> <file>`) | a vehicle by name through the index: its high-detail model, one of its liveries, its paint from carcols and carvariations |
 | `screenshot --ped NAME [--component SLOT=D[:T[:A]]]...` | a ped composed from its variation info: the 12 component slots' default drawables and textures, or the ones named |
 | `plot [<input>...] [--game --region x0,y0,x1,y1 [--detail D] [--max-lod LEVEL] [--hour H] [--weather W]] [--ymap|--ytyp|--ybn|--ydr FILE]... [--layers ...] [--floor-z Z|--z-range LO,HI] [--region ...] [--scale PX] [--marker x,y,label]... [--labels] [--props N|--no-props] [--title T] [--quality Q] -o FILE` | a top-down plan of an interior — rooms, portals, props, collision, drawable shell, navmesh and path nodes — of an exterior map, its entities drawn with their models — or, with `--game`, of a box of the vanilla map: every chunk the game streams there, LOD-filtered, with water and height contours — as PNG, JPG, WebP or SVG |
@@ -404,6 +404,15 @@ view, and `--format` picks PNG, JPEG or WebP:
 ```sh
 rage screenshot ./nested/models/cdimages/weapons.rpf w_ar_carbinerifle.ydr --views iso --size 800x500 --format webp
 ```
+
+`front`, `back`, `left` and `right` are the model's own sides. Vehicles face
++Y and props, furniture and buildings face -Y; `--facing auto` (the default)
+tells them apart by the vehicle shaders, and `--facing vehicle|prop`
+overrides it. Any other angle is `AZIMUTH:ELEVATION` in degrees from the
+front: `90:0` is the right side, `180:0` the back, `30:20` a front-right
+three-quarter view from a little above, `0:90` straight down. Angle views are
+named `a30e20` in file names and grids. `iso` stays the fixed +X/-Y/+Z corner
+(a prop's front-left, a vehicle's rear-right).
 
 ![Carbine rifle from the iso view, as WebP](docs/images/screenshot-carbinerifle-iso.webp)
 
