@@ -171,6 +171,7 @@ debug logging, `--no-update-check` to skip the daily release check.
 | `resource dump <file> [--archive RPF] [--json] [-o FILE] [--names FILE]...` | any Meta or PSO file (`.ymap` `.ytyp` `.ymt` `.ymf` `.pso`) as XML in CodeWalker's layout, or as JSON |
 | `resource rename <file> <name> [--from NAME] [-o FILE] [--dry-run]` | change a name inside a file in place: a `.ymap`'s own name (the default), or any hash field or XML value equal to `--from`, in Meta, PSO and XML files |
 | `resource build <file.xml\|file.json> -o FILE [--format meta\|pso] [--schema FILE]... [--strict] [--no-recalc] [--ytyp PATH]...` | the inverse of `dump`: a `.ymap`/`.ytyp`/`.ymt` (RSC7 Meta) or `_manifest.ymf`/`.pso` (PSO) from the XML or JSON, using CodeWalker's structure tables, or those of the original file with `--schema` |
+| `resource recalc <ymap\|folder>... [--ytyp PATH]... [--dry-run] [--json]` | fix `.ymap` flags, `contentFlags` and extents in place, as `build` works them out; a folder is searched for every `.ymap`, and a file is rewritten only when something changed |
 | `ytyp from-drawables <file\|dir>... -o FILE.ytyp [--txd NAME] [--lod-dist N] [--hd-dist N] [--flags N] [--merge FILE]` | a type file declaring an archetype for every `.ydr`, `.ydd` entry and `.yft`, with the bounds read from the model, as CodeWalker's "New Archetype from YDR" does; `--merge` adds to an existing `.ytyp` |
 | `manifest generate <folder> [-o FILE] [--format pso\|xml]` | a resource's `_manifest.ymf` worked out from its `.ymap` and `.ytyp` files, as CodeWalker's project "Generate manifest" writes it: each map's type-file dependencies, interior flags, each interior's own dependencies and collision entry |
 | `names harvest \| fetch \| info \| lookup <term>...` | the hash-to-name list: build it from the game (`--exe` required), download a public one (`--build N` says what it covers), see where it is and which game build it covers, or hash a name / name a hash |
@@ -479,6 +480,20 @@ For an interior rotated inside CodeWalker the boxes come out tighter than
 CodeWalker's, which applies that rotation twice; they still contain every
 entity.
 
+A map that is already built is fixed in place with `recalc`, one file or a
+whole resource or map pack at once:
+
+```sh
+rage resource recalc "resources/[maps]" --dry-run   # what would change, per file
+rage resource recalc "resources/[maps]"             # rewrite the maps that are stale
+```
+
+Each map's archetypes are looked up the way `build` looks them up, from the
+resource the map is in, and the same notes and warnings come out, prefixed
+with the file. A map whose round trip through the Meta writer would lose
+anything (a structure with no schema, say) is reported and left alone.
+`--json` lists each file's values before and after.
+
 ### Declare archetypes for new models
 
 ```sh
@@ -600,9 +615,12 @@ flags; `--limit 0` lists every entity in text.
 
 An entity standing outside the map's stored extents is reported too: outside
 the streaming box, the game never loads the map where that entity is (a
-map edited by hand, or by a tool that does not recalculate). `resource dump`
-then `resource build` puts the boxes right; `--json` carries the counts as
-`entities_outside_extents` and `entities_outside_streaming_extents`.
+map edited by hand, or by a tool that does not recalculate). `resource
+recalc` puts the boxes right; `--json` carries the counts as
+`entities_outside_extents` and `entities_outside_streaming_extents`. Only
+origins are checked, and the entities box spans the models, so an entity
+whose model sits away from its origin can stay outside it after a recalc;
+that one is a note, not a warning.
 
 The game registers a map under its file name, while parent links and
 manifest `imapName` entries use the name inside the file. A `.ymap` renamed

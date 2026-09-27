@@ -103,6 +103,33 @@ const MAP_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 </CMapData>
 "#;
 
+const YTYP_XML: &str = r#"<CMapTypes>
+  <extensions/>
+  <archetypes>
+    <Item type="CBaseArchetypeDef">
+      <lodDist value="80"/>
+      <flags value="0"/>
+      <specialAttribute value="0"/>
+      <bbMin x="-1" y="-2" z="0"/>
+      <bbMax x="1" y="2" z="3"/>
+      <bsCentre x="0" y="0" z="1.5"/>
+      <bsRadius value="3"/>
+      <hdTextureDist value="5"/>
+      <name>prop_gas_pump_1a</name>
+      <textureDictionary/>
+      <clipDictionary/>
+      <drawableDictionary/>
+      <physicsDictionary/>
+      <assetType>ASSET_TYPE_DRAWABLE</assetType>
+      <assetName>prop_gas_pump_1a</assetName>
+      <extensions/>
+    </Item>
+  </archetypes>
+  <name>types</name>
+  <dependencies/>
+  <compositeEntityTypes/>
+</CMapTypes>"#;
+
 const MANIFEST_XML: &str = r#"<CPackFileMetaData>
   <MapDataGroups/>
   <HDTxdBindingArray/>
@@ -262,32 +289,7 @@ fn a_map_build_recalculates_its_extents_from_the_resource_ytyp() {
     let ytyp_xml = tmp.path().join("types.xml");
     std::fs::write(
         &ytyp_xml,
-        r#"<CMapTypes>
-  <extensions/>
-  <archetypes>
-    <Item type="CBaseArchetypeDef">
-      <lodDist value="80"/>
-      <flags value="0"/>
-      <specialAttribute value="0"/>
-      <bbMin x="-1" y="-2" z="0"/>
-      <bbMax x="1" y="2" z="3"/>
-      <bsCentre x="0" y="0" z="1.5"/>
-      <bsRadius value="3"/>
-      <hdTextureDist value="5"/>
-      <name>prop_gas_pump_1a</name>
-      <textureDictionary/>
-      <clipDictionary/>
-      <drawableDictionary/>
-      <physicsDictionary/>
-      <assetType>ASSET_TYPE_DRAWABLE</assetType>
-      <assetName>prop_gas_pump_1a</assetName>
-      <extensions/>
-    </Item>
-  </archetypes>
-  <name>types</name>
-  <dependencies/>
-  <compositeEntityTypes/>
-</CMapTypes>"#,
+        YTYP_XML,
     )
     .unwrap();
     ok(&["resource", "build", s(&ytyp_xml), "-o", s(&stream.join("types.ytyp"))]);
@@ -317,4 +319,62 @@ fn a_map_build_recalculates_its_extents_from_the_resource_ytyp() {
     ok(&["resource", "build", "--no-recalc", s(&xml), "-o", s(&stale)]);
     let (info, _) = ok(&["resource", "info", s(&stale)]);
     assert!(info.contains("1 entities stand outside the entities extents, 1 outside the streaming extents"), "{info}");
+}
+
+/// `resource recalc` fixes a stale map in place, finding the archetype box
+/// in the resource's .ytyp, and leaves a map that already matches alone.
+#[test]
+fn recalc_fixes_a_stale_map_in_place() {
+    let tmp = tempfile::tempdir().unwrap();
+    let resource = tmp.path().join("res");
+    let stream = resource.join("stream");
+    std::fs::create_dir_all(&stream).unwrap();
+    std::fs::write(resource.join("fxmanifest.lua"), "fx_version 'cerulean'\n").unwrap();
+    let ytyp_xml = tmp.path().join("types.xml");
+    std::fs::write(&ytyp_xml, YTYP_XML).unwrap();
+    ok(&["resource", "build", s(&ytyp_xml), "-o", s(&stream.join("types.ytyp"))]);
+
+    let xml = tmp.path().join("map.xml");
+    std::fs::write(&xml, MAP_XML).unwrap();
+    let stale = stream.join("map1.ymap");
+    ok(&["resource", "build", "--no-recalc", s(&xml), "-o", s(&stale)]);
+    let original = std::fs::read(&stale).unwrap();
+
+    // --dry-run reports and writes nothing.
+    let (out, _) = ok(&["resource", "recalc", s(&stream), "--dry-run"]);
+    assert!(out.contains("would change") && out.contains("entitiesExtents") && out.contains("streamingExtents"), "{out}");
+    assert!(out.contains("1 of 1 map(s) would change"), "{out}");
+    assert_eq!(std::fs::read(&stale).unwrap(), original);
+
+    let (out, stderr) = ok(&["resource", "recalc", s(&resource), "--json"]);
+    let v = json::parse(&out).unwrap();
+    assert_eq!(v["changed"], 1, "{out}");
+    let f = &v["files"][0];
+    assert_eq!(f["written"], true);
+    assert_eq!(f["archetypes_from_ytyp_files"], 1);
+    // prop_bench_01a is declared nowhere (and no name list resolves it here).
+    assert_eq!(f["unbound_archetypes"].len(), 1, "{out}");
+    let near = |a: &json::JsonValue, b: [f64; 3]| (0..3).all(|i| (a[i].as_f64().unwrap() - b[i]).abs() < 1e-3);
+    assert!(near(&f["before"]["entities_extents"][0], [190.0, 6560.0, 25.0]), "{out}");
+    assert!(near(&f["after"]["entities_extents"][0], [1.0, 2.0, 3.0]), "{out}");
+    assert!(near(&f["after"]["streaming_extents"][1], [318.263, 6695.081, 153.78]), "{out}");
+    assert!(stderr.is_empty() || !stderr.contains("error"), "{stderr}");
+
+    let (info, _) = ok(&["resource", "info", s(&stale), "--json"]);
+    assert_eq!(json::parse(&info).unwrap()["map"]["entities_outside_extents"], 0);
+    // The rest of the map survives the rewrite.
+    let (dump, _) = ok(&["resource", "dump", s(&stale)]);
+    assert!(dump.contains("hash_C4E10DD0") && dump.contains("built for a test"), "{dump}"); // cs1_02_phys
+
+    // Run again: nothing to do, nothing written.
+    let fixed = std::fs::read(&stale).unwrap();
+    let (out, _) = ok(&["resource", "recalc", s(&stale)]);
+    assert!(out.contains("0 of 1 map(s) recalculated, 1 already matched"), "{out}");
+    assert_eq!(std::fs::read(&stale).unwrap(), fixed);
+
+    // Anything but an RSC7 map is an error for that file.
+    let not_map = stream.join("bad.ymap");
+    std::fs::write(&not_map, b"nope").unwrap();
+    let err = fails(&["resource", "recalc", s(&stream)]);
+    assert!(err.contains("bad.ymap") && err.contains("1 map(s) could not be recalculated"), "{err}");
 }

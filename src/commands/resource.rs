@@ -35,6 +35,29 @@ pub enum ResourceCommand {
     Rename(RenameArgs),
     /// Build a .ymap/.ytyp/.ymt or a _manifest.ymf/.pso from XML or JSON written by `dump`
     Build(BuildArgs),
+    /// Fix the flags and extents of .ymap files in place (a file, or every .ymap in a folder)
+    Recalc(RecalcArgs),
+}
+
+#[derive(clap::Args)]
+pub struct RecalcArgs {
+    /// .ymap files, or folders to search for them
+    #[arg(required = true, value_name = "YMAP|FOLDER")]
+    pub paths: Vec<PathBuf>,
+
+    /// .ytyp files (or folders of them) declaring the maps' archetypes;
+    /// default: every .ytyp in each map's resource folder, then the game's
+    /// own through the index (--exe / GTAV_PATH)
+    #[arg(long, value_name = "PATH")]
+    pub ytyp: Vec<PathBuf>,
+
+    /// Report what would change and write nothing
+    #[arg(long)]
+    pub dry_run: bool,
+
+    /// Print one JSON object with each file's values before and after
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(clap::Args)]
@@ -283,6 +306,7 @@ pub fn run(args: &ResourceArgs, keys: Option<&GtaKeys>, exe: Option<&Path>, verb
         ResourceCommand::Dump(dump) => run_dump(dump, keys),
         ResourceCommand::Rename(rename) => run_rename(rename),
         ResourceCommand::Build(build) => run_build(build, keys, exe),
+        ResourceCommand::Recalc(recalc) => run_recalc(recalc, keys, exe),
     }
 }
 
@@ -461,11 +485,29 @@ fn run_build(args: &BuildArgs, keys: Option<&GtaKeys>, exe: Option<&Path>) -> Re
 /// `crate::extents`), with archetype bounds from `--ytyp`, the resource
 /// folder's own .ytyp files, and the game index for whatever is left.
 fn recalc_map(map: &mut MetaStruct, args: &BuildArgs, keys: Option<&GtaKeys>, exe: Option<&Path>) -> Result<()> {
-    use crate::extents;
-
-    let mut files = Vec::new();
     let roots: Vec<PathBuf> = if args.ytyp.is_empty() { resource_root(&args.output).into_iter().collect() } else { args.ytyp.clone() };
-    for root in &roots {
+    let files = ytyp_files(&roots)?;
+    let lookup = crate::extents::Lookup::new(&files, exe, keys);
+    let r = MapRecalc::run(map, &lookup, files.len());
+    if r.changes.is_empty() {
+        eprintln!("Map flags and extents already match its contents{}", r.sources());
+    } else {
+        eprintln!("Recalculated {}{}", r.changes.join(", "), r.sources());
+    }
+    if let Some(why) = r.kept_because {
+        eprintln!("note: the extents are kept as given: {why}");
+    }
+    if !r.unbound().is_empty() {
+        let names = crate::names::load(&[], Some(&args.output))?;
+        eprintln!("warning: {}", r.unbound_warning(&names, exe));
+    }
+    Ok(())
+}
+
+/// Every .ytyp in the files and folders given.
+fn ytyp_files(roots: &[PathBuf]) -> Result<Vec<PathBuf>> {
+    let mut files = Vec::new();
+    for root in roots {
         if root.is_dir() {
             files.extend(crate::utils::walkdir(root)?.into_iter().filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("ytyp"))));
         } else if root.is_file() {
@@ -474,42 +516,220 @@ fn recalc_map(map: &mut MetaStruct, args: &BuildArgs, keys: Option<&GtaKeys>, ex
             bail!("--ytyp {}: no such file or folder", root.display());
         }
     }
-    let lookup = extents::Lookup::new(&files, exe, keys);
-    let result = extents::calc(map, &|a| lookup.get(a));
-    let from_game = lookup.from_game.borrow().len();
+    Ok(files)
+}
 
-    let changes = extents::apply(map, &result);
-    let sources = match (files.len(), from_game) {
-        (0, 0) => String::new(),
-        (n, 0) => format!(" (archetypes from {n} .ytyp)"),
-        (0, g) => format!(" ({g} archetypes from the game)"),
-        (n, g) => format!(" (archetypes from {n} .ytyp, {g} from the game)"),
-    };
-    if changes.is_empty() {
-        eprintln!("Map flags and extents already match its contents{sources}");
-    } else {
-        eprintln!("Recalculated {}{sources}", changes.join(", "));
+/// What recalculating one map tree changed and could not work out.
+struct MapRecalc {
+    changes: Vec<String>,
+    from_ytyp: usize,
+    from_game: usize,
+    kept_because: Option<&'static str>,
+    /// Placed archetypes with no bounds (their entities count as points).
+    unbound_points: Vec<u32>,
+    /// Interior room entities' archetypes with no bounds.
+    unbound_rooms: Vec<u32>,
+}
+
+impl MapRecalc {
+    /// Recalculates `map` in place; `ytyps` is how many files `lookup` read.
+    fn run(map: &mut MetaStruct, lookup: &crate::extents::Lookup, ytyps: usize) -> Self {
+        lookup.reset();
+        let result = crate::extents::calc(map, &|a| lookup.get(a));
+        let changes = crate::extents::apply(map, &result);
+        MapRecalc {
+            changes,
+            from_ytyp: ytyps,
+            from_game: lookup.from_game.borrow().len(),
+            kept_because: result.kept_because,
+            unbound_points: result.unbound,
+            unbound_rooms: lookup.room_unbound.take(),
+        }
     }
-    if let Some(why) = result.kept_because {
-        eprintln!("note: the extents are kept as given: {why}");
+
+    fn sources(&self) -> String {
+        match (self.from_ytyp, self.from_game) {
+            (0, 0) => String::new(),
+            (n, 0) => format!(" (archetypes from {n} .ytyp)"),
+            (0, g) => format!(" ({g} archetypes from the game)"),
+            (n, g) => format!(" (archetypes from {n} .ytyp, {g} from the game)"),
+        }
     }
-    let in_rooms = lookup.room_unbound.take();
-    let mut unbound = result.unbound.clone();
-    unbound.extend(in_rooms.iter().filter(|h| !result.unbound.contains(h)));
-    if !unbound.is_empty() {
-        let names = crate::names::load(&[], Some(&args.output))?;
+
+    fn unbound(&self) -> Vec<u32> {
+        let mut all = self.unbound_points.clone();
+        all.extend(self.unbound_rooms.iter().filter(|h| !self.unbound_points.contains(h)));
+        all
+    }
+
+    fn unbound_warning(&self, names: &NameTable, exe: Option<&Path>) -> String {
+        let unbound = self.unbound();
         let listed: Vec<String> = unbound.iter().take(8).map(|h| names.resolve(*h).into_owned()).collect();
         let more = if unbound.len() > 8 { format!(" and {} more", unbound.len() - 8) } else { String::new() };
-        let rooms = if in_rooms.is_empty() { String::new() } else { format!(", including {} inside interiors", in_rooms.len()) };
-        let effect = match (result.unbound.is_empty(), in_rooms.is_empty()) {
+        let rooms = if self.unbound_rooms.is_empty() { String::new() } else { format!(", including {} inside interiors", self.unbound_rooms.len()) };
+        let effect = match (self.unbound_points.is_empty(), self.unbound_rooms.is_empty()) {
             (false, true) => "their entities count as points",
             (true, false) => "their entities are left out of the interior boxes",
             _ => "their entities count as points, or are left out of the interior boxes",
         };
         let hint = if exe.is_none() { "; pass --ytyp, or --exe / GTAV_PATH for vanilla archetypes" } else { "; pass --ytyp with the files that declare them" };
-        eprintln!("warning: no bounds for {} archetype(s){rooms}: {}{more}; {effect}{hint}", unbound.len(), listed.join(", "));
+        format!("no bounds for {} archetype(s){rooms}: {}{more}; {effect}{hint}", unbound.len(), listed.join(", "))
+    }
+}
+
+/// What `recalc` did to one file.
+struct RecalcRow {
+    file: PathBuf,
+    before: crate::extents::Header,
+    after: crate::extents::Header,
+    report: MapRecalc,
+    written: bool,
+}
+
+fn run_recalc(args: &RecalcArgs, keys: Option<&GtaKeys>, exe: Option<&Path>) -> Result<()> {
+    use std::collections::HashMap;
+
+    let mut maps = Vec::new();
+    for path in &args.paths {
+        if path.is_dir() {
+            let found: Vec<PathBuf> = crate::utils::walkdir(path)?.into_iter().filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("ymap"))).collect();
+            if found.is_empty() {
+                eprintln!("warning: no .ymap files under {}", path.display());
+            }
+            maps.extend(found);
+        } else if path.is_file() {
+            maps.push(path.clone());
+        } else {
+            bail!("{}: no such file or folder", path.display());
+        }
+    }
+    maps.sort();
+    maps.dedup();
+    if maps.is_empty() {
+        bail!("no .ymap files to recalculate");
+    }
+
+    // One lookup per resource (or one for all with --ytyp), so each
+    // resource's .ytyp files are read once however many maps it holds.
+    let given = if args.ytyp.is_empty() { None } else { Some(ytyp_files(&args.ytyp)?) };
+    let mut lookups: HashMap<Option<PathBuf>, (usize, crate::extents::Lookup)> = HashMap::new();
+    let mut rows = Vec::new();
+    let mut errors: Vec<(PathBuf, String)> = Vec::new();
+    for path in &maps {
+        let key = if given.is_some() { None } else { resource_root(path) };
+        if !lookups.contains_key(&key) {
+            let files = match &given {
+                Some(files) => files.clone(),
+                None => ytyp_files(key.as_slice())?,
+            };
+            lookups.insert(key.clone(), (files.len(), crate::extents::Lookup::new(&files, exe, keys)));
+        }
+        let (ytyps, lookup) = &lookups[&key];
+        match recalc_file(path, lookup, *ytyps, args.dry_run) {
+            Ok(row) => rows.push(row),
+            Err(e) => {
+                if !args.json {
+                    eprintln!("error: {}: {e:#}", path.display());
+                }
+                errors.push((path.clone(), format!("{e:#}")));
+            }
+        }
+    }
+
+    let changed = rows.iter().filter(|r| !r.report.changes.is_empty()).count();
+    let names = crate::names::load(&[], maps.first().map(PathBuf::as_path))?;
+    if args.json {
+        let vec = |v: Option<Vec3>| v.map_or(json::JsonValue::Null, json_vec);
+        let header = |h: &crate::extents::Header| {
+            json::object! {
+                flags: h.flags,
+                content_flags: h.content_flags,
+                entities_extents: json::array![vec(h.entities_extents.0), vec(h.entities_extents.1)],
+                streaming_extents: json::array![vec(h.streaming_extents.0), vec(h.streaming_extents.1)],
+            }
+        };
+        let mut files: Vec<json::JsonValue> = rows
+            .iter()
+            .map(|r| {
+                json::object! {
+                    file: r.file.display().to_string(),
+                    changed: !r.report.changes.is_empty(),
+                    written: r.written,
+                    changes: r.report.changes.clone(),
+                    before: header(&r.before),
+                    after: header(&r.after),
+                    extents_kept_because: r.report.kept_because,
+                    unbound_archetypes: r.report.unbound().iter().map(|h| json_name(*h, &names)).collect::<Vec<_>>(),
+                    archetypes_from_ytyp_files: r.report.from_ytyp,
+                    archetypes_from_game: r.report.from_game,
+                }
+            })
+            .collect();
+        files.extend(errors.iter().map(|(file, error)| json::object! { file: file.display().to_string(), error: error.clone() }));
+        let out = json::object! { dry_run: args.dry_run, maps: maps.len(), changed: changed, failed: errors.len(), files: files };
+        println!("{}", out.dump());
+    } else {
+        for r in &rows {
+            let file = r.file.display();
+            if !r.report.changes.is_empty() {
+                let verb = if args.dry_run { "would change" } else { "recalculated" };
+                println!("{file}: {verb} {}{}", r.report.changes.join(", "), r.report.sources());
+            }
+            if let Some(why) = r.report.kept_because {
+                eprintln!("note: {file}: the extents are kept as given: {why}");
+            }
+            if !r.report.unbound().is_empty() {
+                eprintln!("warning: {file}: {}", r.report.unbound_warning(&names, exe));
+            }
+        }
+        let verb = if args.dry_run { "would change" } else { "recalculated" };
+        let failed = if errors.is_empty() { String::new() } else { format!(", {} failed", errors.len()) };
+        println!("{} of {} map(s) {verb}, {} already matched{failed}", changed, maps.len(), rows.len() - changed);
+    }
+    if !errors.is_empty() {
+        bail!("{} map(s) could not be recalculated", errors.len());
     }
     Ok(())
+}
+
+/// Recalculates one .ymap on disk, rewriting it when anything changed
+/// (and `dry_run` is off). A file whose round trip through the Meta
+/// writer would lose anything is left alone, as an error.
+fn recalc_file(path: &Path, lookup: &crate::extents::Lookup, ytyps: usize, dry_run: bool) -> Result<RecalcRow> {
+    use rage_formats::{build_meta, Schema};
+
+    let data = std::fs::read(path).with_context(|| format!("failed to read '{}'", path.display()))?;
+    if !matches!(detect(&data)?, Container::Rsc7(_)) {
+        bail!("not an RSC7 .ymap (an XML or JSON map is fixed with `resource build`)");
+    }
+    let dump = dump_meta(&data).context("not a Meta file")?;
+    if let Some(w) = dump.warnings.first() {
+        bail!("not rewritten: the map does not read cleanly ({w}{})", if dump.warnings.len() > 1 { format!(", and {} more", dump.warnings.len() - 1) } else { String::new() });
+    }
+    let MetaValue::Struct(mut map) = dump.root else { bail!("the file's root is not a structure") };
+    if map.type_hash != rage_joaat("CMapData") {
+        bail!("not a map (the root is 0x{:08X}, not CMapData)", map.type_hash);
+    }
+
+    let before = crate::extents::header(&map);
+    let report = MapRecalc::run(&mut map, lookup, ytyps);
+    let after = crate::extents::header(&map);
+    let mut written = false;
+    if !report.changes.is_empty() && !dry_run {
+        let mut schema = Schema::builtin().clone();
+        schema.merge(Schema::from_file(&data).context("reading the map's own structure definitions")?);
+        let out = build_meta(&MetaValue::Struct(map), &schema)?;
+        if let Some(w) = out.warnings.first() {
+            bail!("not rewritten: {} member(s) could not be written back ({w})", out.warnings.len());
+        }
+        let check = dump_meta(&out.bytes).context("not rewritten: the new file does not read back")?;
+        if let Some(w) = check.warnings.first() {
+            bail!("not rewritten: the new file reads back with warnings ({w})");
+        }
+        std::fs::write(path, &out.bytes).with_context(|| format!("writing {}", path.display()))?;
+        written = true;
+    }
+    Ok(RecalcRow { file: path.to_path_buf(), before, after, report, written })
 }
 
 /// The FiveM resource an output file lands in (the nearest folder up with
@@ -770,12 +990,21 @@ fn write_map(out: &mut String, ymap: &Ymap, names: &NameTable, checks: &Checks, 
     }
     let (outside, unstreamed) = crate::extents::strays(ymap);
     if outside + unstreamed > 0 {
-        let what = match (outside, unstreamed) {
-            (_, 0) => format!("{outside} entities stand outside the entities extents"),
-            (0, _) => format!("{unstreamed} entities stand outside the streaming extents, so the game never loads the map where they are"),
-            _ => format!("{outside} entities stand outside the entities extents, {unstreamed} outside the streaming extents (the game never loads the map where those are)"),
-        };
-        writeln!(out, "           warning: {what}; `rage resource dump` then `resource build` recalculates both").unwrap();
+        // The entities box spans the models, not their origins, so an origin
+        // outside it is only a sign of a stale box; outside the streaming
+        // box (the models grown by their lodDist) it is almost surely one.
+        match (outside, unstreamed) {
+            (_, 0) => writeln!(
+                out,
+                "           note: {outside} entities stand outside the entities extents; `rage resource recalc` fixes a stale box (if it changes nothing, their models just sit away from their origins)"
+            ),
+            (0, _) => writeln!(out, "           warning: {unstreamed} entities stand outside the streaming extents, so the game never loads the map where they are; `rage resource recalc` fixes both"),
+            _ => writeln!(
+                out,
+                "           warning: {outside} entities stand outside the entities extents, {unstreamed} outside the streaming extents (the game never loads the map where those are); `rage resource recalc` fixes both"
+            ),
+        }
+        .unwrap();
     }
     writeln!(out, "Entities:  {} ({} MLO instances)", ymap.entities.len(), ymap.mlo_instances.len()).unwrap();
     if ymap.entities.is_empty() {

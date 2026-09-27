@@ -319,6 +319,26 @@ pub fn stored(map: &MetaStruct) -> (u32, u32) {
     (bits("flags"), bits("contentFlags"))
 }
 
+/// The header members this module owns, as a map tree stores them.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Header {
+    pub flags: u32,
+    pub content_flags: u32,
+    pub entities_extents: (Option<Vec3>, Option<Vec3>),
+    pub streaming_extents: (Option<Vec3>, Option<Vec3>),
+}
+
+pub fn header(map: &MetaStruct) -> Header {
+    let (flags, content_flags) = stored(map);
+    let v = |n: &str| vec3_of(map, n);
+    Header {
+        flags,
+        content_flags,
+        entities_extents: (v("entitiesExtentsMin"), v("entitiesExtentsMax")),
+        streaming_extents: (v("streamingExtentsMin"), v("streamingExtentsMax")),
+    }
+}
+
 /// Writes `r` into the map, keeping the bits this module does not own.
 /// Returns what changed, for the caller to report.
 pub fn apply(map: &mut MetaStruct, r: &Recalc) -> Vec<String> {
@@ -426,6 +446,13 @@ impl<'a> Lookup<'a> {
         Lookup { local, local_mlos, exe, keys, index: OnceCell::new(), game_mlos: RefCell::default(), from_game: RefCell::default(), room_unbound: RefCell::default() }
     }
 
+    /// Forgets what `from_game` and `room_unbound` gathered, so the next
+    /// map's report covers that map only.
+    pub fn reset(&self) {
+        self.from_game.borrow_mut().clear();
+        self.room_unbound.borrow_mut().clear();
+    }
+
     fn index(&self) -> Option<&GameIndex> {
         self.index.get_or_init(|| GameIndex::load(self.exe, self.keys, Parts::MODELS | Parts::INTERIORS)).as_ref()
     }
@@ -476,7 +503,10 @@ impl<'a> Lookup<'a> {
 
 /// How many of a parsed map's entities stand outside its stored boxes:
 /// `(outside entitiesExtents, outside streamingExtents)`. Only positions
-/// are checked, so a count here is certain, never a matter of bounds.
+/// are checked, with no archetype bounds to hand, so the first count can
+/// include entities whose model sits away from its origin (the box spans
+/// models, not origins); the streaming box, grown by `lodDist`, rarely
+/// leaves an origin out unless it is stale.
 pub fn strays(ymap: &Ymap) -> (usize, usize) {
     let hd = &ymap.header;
     let inside = |p: Vec3, lo: Vec3, hi: Vec3| {
