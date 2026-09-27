@@ -493,16 +493,21 @@ fn recalc_map(map: &mut MetaStruct, args: &BuildArgs, keys: Option<&GtaKeys>, ex
     if let Some(why) = result.kept_because {
         eprintln!("note: the extents are kept as given: {why}");
     }
-    if !result.unbound.is_empty() {
+    let in_rooms = lookup.room_unbound.take();
+    let mut unbound = result.unbound.clone();
+    unbound.extend(in_rooms.iter().filter(|h| !result.unbound.contains(h)));
+    if !unbound.is_empty() {
         let names = crate::names::load(&[], Some(&args.output))?;
-        let listed: Vec<String> = result.unbound.iter().take(8).map(|h| names.resolve(*h).into_owned()).collect();
-        let more = if result.unbound.len() > 8 { format!(" and {} more", result.unbound.len() - 8) } else { String::new() };
+        let listed: Vec<String> = unbound.iter().take(8).map(|h| names.resolve(*h).into_owned()).collect();
+        let more = if unbound.len() > 8 { format!(" and {} more", unbound.len() - 8) } else { String::new() };
+        let rooms = if in_rooms.is_empty() { String::new() } else { format!(", including {} inside interiors", in_rooms.len()) };
+        let effect = match (result.unbound.is_empty(), in_rooms.is_empty()) {
+            (false, true) => "their entities count as points",
+            (true, false) => "their entities are left out of the interior boxes",
+            _ => "their entities count as points, or are left out of the interior boxes",
+        };
         let hint = if exe.is_none() { "; pass --ytyp, or --exe / GTAV_PATH for vanilla archetypes" } else { "; pass --ytyp with the files that declare them" };
-        eprintln!(
-            "warning: no bounds for {} archetype(s): {}{more}; their entities count as points{hint}",
-            result.unbound.len(),
-            listed.join(", ")
-        );
+        eprintln!("warning: no bounds for {} archetype(s){rooms}: {}{more}; {effect}{hint}", unbound.len(), listed.join(", "));
     }
     Ok(())
 }

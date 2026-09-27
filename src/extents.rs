@@ -401,6 +401,9 @@ pub struct Lookup<'a> {
     game_mlos: RefCell<HashMap<u32, Option<MloDef>>>,
     /// Archetypes the game supplied.
     pub from_game: RefCell<HashSet<u32>>,
+    /// Interior room entities' archetypes found nowhere, left out of
+    /// their interior's box.
+    pub room_unbound: RefCell<Vec<u32>>,
 }
 
 impl<'a> Lookup<'a> {
@@ -420,7 +423,7 @@ impl<'a> Lookup<'a> {
                 local_mlos.insert(m.name_hash, m);
             }
         }
-        Lookup { local, local_mlos, exe, keys, index: OnceCell::new(), game_mlos: RefCell::default(), from_game: RefCell::default() }
+        Lookup { local, local_mlos, exe, keys, index: OnceCell::new(), game_mlos: RefCell::default(), from_game: RefCell::default(), room_unbound: RefCell::default() }
     }
 
     fn index(&self) -> Option<&GameIndex> {
@@ -457,7 +460,14 @@ impl<'a> Lookup<'a> {
     /// The bounds [`calc`] needs for archetype `a`.
     pub fn get(&self, a: u32) -> Option<ArchBounds> {
         let stored = self.stored(a);
-        match self.with_mlo(a, |m| mlo_box(m, &|x| self.stored(x))) {
+        let room = |x| {
+            let b = self.stored(x);
+            if b.is_none() && !self.room_unbound.borrow().contains(&x) {
+                self.room_unbound.borrow_mut().push(x);
+            }
+            b
+        };
+        match self.with_mlo(a, |m| mlo_box(m, &room)) {
             Some((bb_min, bb_max)) => Some(ArchBounds { bb_min, bb_max, lod_dist: stored.map_or(0.0, |b| b.lod_dist) }),
             None => stored,
         }
@@ -600,5 +610,36 @@ mod tests {
         let r = calc(&m, &|_| None);
         assert!(r.extents.is_none() && r.kept_because.is_some());
         assert_eq!(r.content_flags, 1 << 7);
+    }
+
+    #[test]
+    fn an_interior_room_entity_without_bounds_is_reported() {
+        let placed = |name: &str, x: f32| rage_formats::YmapEntity {
+            archetype_hash: rage_joaat(name),
+            flags: 0,
+            guid: 0,
+            position: Vec3::new(x, 0.0, 0.0),
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            scale_xy: 1.0,
+            scale_z: 1.0,
+            parent_index: -1,
+            lod_dist: 0.0,
+            is_mlo_instance: false,
+        };
+        let room = rage_formats::MloRoom { name: "hall".into(), bb_min: splat(0.0), bb_max: splat(0.0), flags: 0, floor_id: 0, attached_objects: vec![0, 1] };
+        let mlo = MloDef {
+            name_hash: rage_joaat("int_test"),
+            entities: vec![placed("known_prop", 5.0), placed("missing_prop", 50.0)],
+            rooms: vec![room],
+            portals: vec![],
+            entity_sets: vec![],
+        };
+        let mut lookup = Lookup::new(&[], None, None);
+        lookup.local.insert(rage_joaat("known_prop"), ArchBounds { bb_min: splat(-1.0), bb_max: splat(1.0), lod_dist: 10.0 });
+        lookup.local_mlos.insert(mlo.name_hash, mlo);
+
+        let (lo, hi) = lookup.get(rage_joaat("int_test")).map(|b| (b.bb_min, b.bb_max)).unwrap();
+        assert_eq!((lo, hi), (Vec3::new(0.0, -1.0, -1.0), Vec3::new(6.0, 1.0, 1.0)));
+        assert_eq!(*lookup.room_unbound.borrow(), vec![rage_joaat("missing_prop")]);
     }
 }
