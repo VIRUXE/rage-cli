@@ -446,7 +446,7 @@ fn run_build(args: &BuildArgs, keys: Option<&GtaKeys>, exe: Option<&Path>) -> Re
         && let MetaValue::Struct(map) = &mut value
         && map.type_hash == rage_joaat("CMapData")
     {
-        recalc_map(map, args, keys, exe)?;
+        recalc_map(map, &args.output, &args.ytyp, keys, exe)?;
     }
 
     let written = if format == "pso" { build_pso(&value, &schema)? } else { build_meta(&value, &schema)? };
@@ -484,8 +484,8 @@ fn run_build(args: &BuildArgs, keys: Option<&GtaKeys>, exe: Option<&Path>) -> Re
 /// Works a map's flags and extents out from its contents (see
 /// `crate::extents`), with archetype bounds from `--ytyp`, the resource
 /// folder's own .ytyp files, and the game index for whatever is left.
-fn recalc_map(map: &mut MetaStruct, args: &BuildArgs, keys: Option<&GtaKeys>, exe: Option<&Path>) -> Result<()> {
-    let roots: Vec<PathBuf> = if args.ytyp.is_empty() { resource_root(&args.output).into_iter().collect() } else { args.ytyp.clone() };
+pub fn recalc_map(map: &mut MetaStruct, output: &Path, ytyp: &[PathBuf], keys: Option<&GtaKeys>, exe: Option<&Path>) -> Result<()> {
+    let roots: Vec<PathBuf> = if ytyp.is_empty() { resource_root(output).into_iter().collect() } else { ytyp.to_vec() };
     let files = ytyp_files(&roots)?;
     let lookup = crate::extents::Lookup::new(&files, exe, keys);
     let r = MapRecalc::run(map, &lookup, files.len());
@@ -498,7 +498,7 @@ fn recalc_map(map: &mut MetaStruct, args: &BuildArgs, keys: Option<&GtaKeys>, ex
         eprintln!("note: the extents are kept as given: {why}");
     }
     if !r.unbound().is_empty() {
-        let names = crate::names::load(&[], Some(&args.output))?;
+        let names = crate::names::load(&[], Some(output))?;
         eprintln!("warning: {}", r.unbound_warning(&names, exe));
     }
     Ok(())

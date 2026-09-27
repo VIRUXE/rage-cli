@@ -15,3 +15,4 @@ pub mod plot;
 pub mod names;
 pub mod ytyp;
 pub mod manifest;
+pub mod ymap;

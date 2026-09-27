@@ -173,6 +173,7 @@ debug logging, `--no-update-check` to skip the daily release check.
 | `resource build <file.xml\|file.json> -o FILE [--format meta\|pso] [--schema FILE]... [--strict] [--no-recalc] [--ytyp PATH]...` | the inverse of `dump`: a `.ymap`/`.ytyp`/`.ymt` (RSC7 Meta) or `_manifest.ymf`/`.pso` (PSO) from the XML or JSON, using CodeWalker's structure tables, or those of the original file with `--schema` |
 | `resource recalc <ymap\|folder>... [--ytyp PATH]... [--dry-run] [--json]` | fix `.ymap` flags, `contentFlags` and extents in place, as `build` works them out; a folder is searched for every `.ymap`, and a file is rewritten only when something changed |
 | `ytyp from-drawables <file\|dir>... -o FILE.ytyp [--txd NAME] [--lod-dist N] [--hd-dist N] [--flags N] [--merge FILE]` | a type file declaring an archetype for every `.ydr`, `.ydd` entry and `.yft`, with the bounds read from the model, as CodeWalker's "New Archetype from YDR" does; `--merge` adds to an existing `.ytyp` |
+| `ymap from-menyoo <file.xml> -o FILE.ymap [--name NAME] [--lod-dist N] [--ytyp PATH]... [--no-recalc]` | a map from a Menyoo spooner XML, as CodeWalker's "Import Menyoo XML" makes it: props become entities, vehicles car generators, peds are left out; flags and extents worked out as `resource build` does |
 | `manifest generate <folder> [-o FILE] [--format pso\|xml]` | a resource's `_manifest.ymf` worked out from its `.ymap` and `.ytyp` files, as CodeWalker's project "Generate manifest" writes it: each map's type-file dependencies, interior flags, each interior's own dependencies and collision entry |
 | `names harvest \| fetch \| info \| lookup <term>...` | the hash-to-name list: build it from the game (`--exe` required), download a public one (`--build N` says what it covers), see where it is and which game build it covers, or hash a name / name a hash |
 | `textures <archive> <file> [-o DIR] [--format png\|jpg\|webp] [--sheet] [--max-size PX] [--dds]` | export a dictionary's textures, or the textures baked into a drawable, as images (alias `ytd`); a loose `.ytd`/`.ydr`/`.ydd`/`.yft` needs no archive |
@@ -514,6 +515,27 @@ name, if there is one). A `.yft` gives one fragment archetype, and a
 vehicle's `_hi.yft` is skipped next to its `.yft`. Escrow-encrypted
 models are skipped with a warning. `--merge` keeps the archetypes of an
 existing `.ytyp` and replaces those given again.
+
+### Turn a Menyoo placement into a map
+
+```sh
+rage ymap from-menyoo bench_park.xml -o my_park/stream/bench_park.ymap
+rage ymap from-menyoo bench_park.xml -o my_park/stream/bench_park.ymap --lod-dist 150
+```
+
+`ymap from-menyoo` reads a Menyoo spooner file and writes what CodeWalker's
+"Import Menyoo XML" does. Each placed object becomes an entity at its
+position and rotation, static (`flags` 32) unless Menyoo marked it dynamic,
+with its texture variation as tint. Each vehicle becomes a car generator
+facing the way it was placed, with random colours and its livery. Peds are
+counted and left out: a map has nowhere to put them. Attached objects are
+placed where Menyoo last saved them, unattached. An entity's `lodDist` is
+Menyoo's, capped at 10000; Menyoo saves 16960 for most props, which makes
+the map stream in from anywhere, so `--lod-dist` sets one for all. The
+map's flags and extents are then worked out the way `resource build` does
+(`--ytyp`, the resource folder's type files, then the game index;
+`--no-recalc` keeps CodeWalker's starting values). The map is named after
+the output file unless `--name` says otherwise.
 
 ### Generate a resource's manifest
 
@@ -971,6 +993,7 @@ src/
     plot.rs          `plot`: placement, MLO-vs-world-space meshes, room-box estimation, exterior entities, the caption
     resource.rs      `resource info`/`dump`: container detection, per-format summaries, XML/JSON dumps
     names.rs         `names`: harvesting the game's names, lookups
+    ymap.rs          `ymap from-menyoo`: a map from a Menyoo spooner XML, CodeWalker's import
     manifest.rs      `manifest generate`: a _manifest.ymf from a folder's maps and type files, CodeWalker's layout
   plot_inputs.rs     turning plot's free-form inputs (files, a resource folder, a vanilla name) into parsed sources
   props.rs           what to draw for a placed entity: a folder model, a game model through the index, a box, or nothing

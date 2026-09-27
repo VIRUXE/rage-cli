@@ -16,7 +16,7 @@ mod resources;
 mod update;
 mod utils;
 
-use commands::{info, list, extract, verify, tree, textures, screenshot, create, search, resource, index_cmd, navmesh as navmesh_cmd, plot, names as names_cmd, ytyp, manifest};
+use commands::{info, list, extract, verify, tree, textures, screenshot, create, search, resource, index_cmd, navmesh as navmesh_cmd, plot, names as names_cmd, ytyp, ymap, manifest};
 use commands::update as update_cmd;
 use rpf::GtaKeys;
 
@@ -122,6 +122,9 @@ enum Commands {
     /// Make .ytyp type files: archetypes declared from .ydr/.ydd/.yft models
     Ytyp(ytyp::YtypArgs),
 
+    /// Make .ymap map files: entities and car generators from a Menyoo spooner XML
+    Ymap(ymap::YmapArgs),
+
     /// Generate a resource's _manifest.ymf from its maps and type files
     Manifest(manifest::ManifestArgs),
 
@@ -221,6 +224,7 @@ fn dispatch(command: Commands, keys: Option<&GtaKeys>, exe: Option<&Path>, verbo
         Commands::Index(args)                                => index_cmd::run(&args, keys, exe),
         Commands::Names(args)                                => names_cmd::run(&args, keys, exe),
         Commands::Ytyp(args)                                 => ytyp::run(&args),
+        Commands::Ymap(args)                                 => ymap::run(&args, keys, exe),
         Commands::Manifest(args)                             => manifest::run(&args, keys, exe),
         Commands::Create { input, output, version, encryption } => {
             create::run(&input, &output, version, &encryption, keys)
