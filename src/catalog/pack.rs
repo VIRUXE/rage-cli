@@ -111,7 +111,7 @@ pub fn export(cat: &Catalog, out: &Path, opts: &ExportOptions) -> Result<ExportS
         game: "gta5",
         game_builds: builds,
         generator: format!("rage {}", env!("CARGO_PKG_VERSION")),
-        license: "CC0-1.0",
+        license: "Unlicense",
         count: count,
         annotations: entries,
     };
