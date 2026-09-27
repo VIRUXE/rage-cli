@@ -171,6 +171,7 @@ debug logging, `--no-update-check` to skip the daily release check.
 | `resource dump <file> [--archive RPF] [--json] [-o FILE] [--names FILE]...` | any Meta or PSO file (`.ymap` `.ytyp` `.ymt` `.ymf` `.pso`) as XML in CodeWalker's layout, or as JSON |
 | `resource rename <file> <name> [--from NAME] [-o FILE] [--dry-run]` | change a name inside a file in place: a `.ymap`'s own name (the default), or any hash field or XML value equal to `--from`, in Meta, PSO and XML files |
 | `resource build <file.xml\|file.json> -o FILE [--format meta\|pso] [--schema FILE]... [--strict] [--no-recalc] [--ytyp PATH]...` | the inverse of `dump`: a `.ymap`/`.ytyp`/`.ymt` (RSC7 Meta) or `_manifest.ymf`/`.pso` (PSO) from the XML or JSON, using CodeWalker's structure tables, or those of the original file with `--schema` |
+| `ytyp from-drawables <file\|dir>... -o FILE.ytyp [--txd NAME] [--lod-dist N] [--hd-dist N] [--flags N] [--merge FILE]` | a type file declaring an archetype for every `.ydr`, `.ydd` entry and `.yft`, with the bounds read from the model, as CodeWalker's "New Archetype from YDR" does; `--merge` adds to an existing `.ytyp` |
 | `names harvest \| fetch \| info \| lookup <term>...` | the hash-to-name list: build it from the game (`--exe` required), download a public one (`--build N` says what it covers), see where it is and which game build it covers, or hash a name / name a hash |
 | `textures <archive> <file> [-o DIR] [--format png\|jpg\|webp] [--sheet] [--max-size PX] [--dds]` | export a dictionary's textures, or the textures baked into a drawable, as images (alias `ytd`); a loose `.ytd`/`.ydr`/`.ydd`/`.yft` needs no archive |
 | `textures encode <image\|dir\|glob>... [-o FILE\|DIR] [--format bc1\|bc3\|bc4\|bc5\|bc7\|rgba8] [--mips auto\|N]` | PNG/TGA/JPG/WebP/BMP to DDS with a full mip chain: BC5 for `*_n` normal maps, BC3 with alpha, BC1 otherwise |
@@ -476,6 +477,27 @@ map) or of an empty stub map. `--no-recalc` writes everything verbatim.
 For an interior rotated inside CodeWalker the boxes come out tighter than
 CodeWalker's, which applies that rotation twice; they still contain every
 entity.
+
+### Declare archetypes for new models
+
+```sh
+rage ytyp from-drawables stream/ -o stream/my_props.ytyp
+rage ytyp from-drawables new_chair.ydr -o stream/my_props.ytyp --merge stream/my_props.ytyp --lod-dist 150
+```
+
+A prop needs an archetype in some `.ytyp` before a map can place it.
+`ytyp from-drawables` writes one per model, filled the way CodeWalker's
+"New Archetype from YDR" fills it: the model's file name as the archetype
+and asset name, its bounding box and sphere, `lodDist` and `hdTextureDist`
+60 and `flags` 32 unless given. The texture dictionary is a `.ytd` named
+like the model beside it, else the model's own name when it embeds its
+textures, else none (`--txd` sets one for all). A `.ydr` with collision
+built in names itself as physics dictionary. A `.ydd` gives one archetype
+per drawable, pointing at the dictionary (and at a `.ybd` of the same
+name, if there is one). A `.yft` gives one fragment archetype, and a
+vehicle's `_hi.yft` is skipped next to its `.yft`. Escrow-encrypted
+models are skipped with a warning. `--merge` keeps the archetypes of an
+existing `.ytyp` and replaces those given again.
 
 ### Inspect a resource file
 

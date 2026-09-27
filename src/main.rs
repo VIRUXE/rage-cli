@@ -16,7 +16,7 @@ mod resources;
 mod update;
 mod utils;
 
-use commands::{info, list, extract, verify, tree, textures, screenshot, create, search, resource, index_cmd, navmesh as navmesh_cmd, plot, names as names_cmd};
+use commands::{info, list, extract, verify, tree, textures, screenshot, create, search, resource, index_cmd, navmesh as navmesh_cmd, plot, names as names_cmd, ytyp};
 use commands::update as update_cmd;
 use rpf::GtaKeys;
 
@@ -119,6 +119,9 @@ enum Commands {
     /// Inspect loose resource files (.ydr/.ytd/.ymap/.ytyp/.ymf/...) or entries inside an archive, or dump metadata as XML/JSON
     Resource(resource::ResourceArgs),
 
+    /// Make .ytyp type files: archetypes declared from .ydr/.ydd/.yft models
+    Ytyp(ytyp::YtypArgs),
+
     /// Harvest, inspect or query the hash-to-name list used to print metadata
     Names(names_cmd::NamesArgs),
 
@@ -214,6 +217,7 @@ fn dispatch(command: Commands, keys: Option<&GtaKeys>, exe: Option<&Path>, verbo
         Commands::Update(args)                               => update_cmd::run(&args),
         Commands::Index(args)                                => index_cmd::run(&args, keys, exe),
         Commands::Names(args)                                => names_cmd::run(&args, keys, exe),
+        Commands::Ytyp(args)                                 => ytyp::run(&args),
         Commands::Create { input, output, version, encryption } => {
             create::run(&input, &output, version, &encryption, keys)
         }
