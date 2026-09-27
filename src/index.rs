@@ -320,12 +320,12 @@ pub struct KitEntry {
     pub livery2_names: Vec<u32>,
 }
 
-const RESIDENT_DICTS: [&str; 2] = ["mapdetail", "vehshare"];
+pub(crate) const RESIDENT_DICTS: [&str; 2] = ["mapdetail", "vehshare"];
 
 /// CodeWalker's `GameFileCache.InitGtxds` matches these names exactly
 /// (`entry.NameLower == "..."`), not as a suffix — a filename like
 /// `dlc_gtxd.ymt` is deliberately not picked up, matching the reference.
-const TXD_RELATIONSHIP_FILES: [&str; 4] = ["gtxd.ymt", "gtxd.meta", "mph4_gtxd.ymt", "vehicles.meta"];
+pub(crate) const TXD_RELATIONSHIP_FILES: [&str; 4] = ["gtxd.ymt", "gtxd.meta", "mph4_gtxd.ymt", "vehicles.meta"];
 
 /// The vehicle and ped metadata files, matched by exact name as
 /// `GameFileCache.InitVehicles`/`InitPeds` do (`entry.NameLower == "..."`).
@@ -470,20 +470,7 @@ impl GameIndex {
     /// Reads the raw bytes of an already-located entry, descending through
     /// any nested archives on the way.
     pub fn load_bytes(&self, loc: &EntryLoc, keys: Option<&GtaKeys>) -> Result<Vec<u8>> {
-        let top = Archive::open(&loc.top_archive, keys)?;
-        top.require_keys(keys)?;
-        let nested;
-        let archive = if loc.nested_rpfs.is_empty() {
-            &top
-        } else {
-            nested = open_chain(&top, &loc.nested_rpfs, keys)
-                .with_context(|| format!("in '{}'", loc.top_archive.display()))?;
-            &nested
-        };
-        let file = archive
-            .find_file(&loc.inner_path)
-            .with_context(|| format!("'{}' not found", loc.inner_path))?;
-        archive.extract(file, keys).with_context(|| format!("failed to extract '{}'", loc.inner_path))
+        load_entry(loc, keys)
     }
 
     /// Every `.ytd` layer `screenshot` should try, in CodeWalker's order,
@@ -945,14 +932,50 @@ pub fn ranked_archives(game_root: &Path, keys: Option<&GtaKeys>) -> Result<Vec<P
 /// carries its pack name (from its path, e.g. `mpheist` for
 /// `.../dlcpacks/mpheist/dlc.rpf`) so `GameIndex::build` can rank it
 /// against `dlc_load_order`'s result.
+/// Reads the raw bytes of an already-located entry, descending through
+/// any nested archives on the way (see `GameIndex::load_bytes`).
+pub(crate) fn load_entry(loc: &EntryLoc, keys: Option<&GtaKeys>) -> Result<Vec<u8>> {
+    let top = Archive::open(&loc.top_archive, keys)?;
+    top.require_keys(keys)?;
+    let nested;
+    let archive = if loc.nested_rpfs.is_empty() {
+        &top
+    } else {
+        nested = open_chain(&top, &loc.nested_rpfs, keys)
+            .with_context(|| format!("in '{}'", loc.top_archive.display()))?;
+        &nested
+    };
+    let file = archive
+        .find_file(&loc.inner_path)
+        .with_context(|| format!("'{}' not found", loc.inner_path))?;
+    archive.extract(file, keys).with_context(|| format!("failed to extract '{}'", loc.inner_path))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum ArchiveTier {
+pub(crate) enum ArchiveTier {
     Base,
     Update,
     Dlc(String),
 }
 
 impl ArchiveTier {
+    /// `base`, `update` or `dlc`, as the catalogue stores it.
+    pub(crate) fn tier_name(&self) -> &'static str {
+        match self {
+            ArchiveTier::Base => "base",
+            ArchiveTier::Update => "update",
+            ArchiveTier::Dlc(_) => "dlc",
+        }
+    }
+
+    /// The DLC pack directory name for a DLC archive.
+    pub(crate) fn dlc_pack(&self) -> Option<&str> {
+        match self {
+            ArchiveTier::Dlc(name) => Some(name),
+            _ => None,
+        }
+    }
+
     fn rank(&self) -> u8 {
         match self {
             ArchiveTier::Base => 0,
@@ -962,7 +985,7 @@ impl ArchiveTier {
     }
 }
 
-fn archive_tier(path: &Path) -> ArchiveTier {
+pub(crate) fn archive_tier(path: &Path) -> ArchiveTier {
     let normalized = path.to_string_lossy().to_lowercase().replace('\\', "/");
     // Checked before the `update` test: every `dlcpacks` archive lives
     // under `update/x64/dlcpacks/...`, so it would otherwise be
@@ -981,7 +1004,7 @@ fn archive_tier(path: &Path) -> ArchiveTier {
 /// `Some("mpheist")`. Matches on any `dlcN.rpf` (some packs ship
 /// `dlc.rpf` plus `dlc1.rpf`/`dlc2.rpf` subpacks alongside it), since all
 /// of a pack's own archives share one load-order rank.
-fn dlc_pack_name(normalized_path: &str) -> Option<String> {
+pub(crate) fn dlc_pack_name(normalized_path: &str) -> Option<String> {
     let after = normalized_path.split("/dlcpacks/").nth(1)?;
     let name = after.split('/').next()?;
     (!name.is_empty()).then(|| name.to_string())

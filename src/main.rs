@@ -3,6 +3,7 @@ use clap::{Parser, Subcommand};
 use std::path::{Path, PathBuf};
 
 mod rpf;
+mod catalog;
 mod commands;
 mod navmesh;
 mod names;
@@ -21,7 +22,7 @@ mod resources;
 mod update;
 mod utils;
 
-use commands::{info, list, extract, verify, tree, textures, screenshot, create, search, resource, index_cmd, navmesh as navmesh_cmd, paths as paths_cmd, plot, names as names_cmd, ytyp, ymap, manifest};
+use commands::{info, list, extract, verify, tree, textures, screenshot, create, search, resource, index_cmd, navmesh as navmesh_cmd, paths as paths_cmd, plot, names as names_cmd, ytyp, ymap, manifest, catalog as catalog_cmd};
 use commands::update as update_cmd;
 use rpf::GtaKeys;
 
@@ -171,6 +172,10 @@ enum Commands {
     #[command(hide = true)]
     Index(index_cmd::IndexArgs),
 
+    /// Build and query a searchable catalogue of every drawable and texture
+    /// in the game, with blind review sheets and annotations for agents
+    Catalog(catalog_cmd::CatalogArgs),
+
     /// Write the keys out to disk for reuse with --keys
     ExtractKeys {
         /// Directory to save extracted keys into
@@ -235,6 +240,7 @@ fn dispatch(command: Commands, keys: Option<&GtaKeys>, exe: Option<&Path>, verbo
         Commands::Ytyp(args)                                 => ytyp::run(&args),
         Commands::Ymap(args)                                 => ymap::run(&args, keys, exe),
         Commands::Manifest(args)                             => manifest::run(&args, keys, exe),
+        Commands::Catalog(args)                              => catalog_cmd::run(&args, keys, exe),
         Commands::Create { input, output, version, encryption } => {
             create::run(&input, &output, version, &encryption, keys)
         }

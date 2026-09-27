@@ -113,6 +113,14 @@ pub fn cache_entry_name(size: u64, modified_secs: u64) -> String {
     format!("{size}-{modified_secs}")
 }
 
+/// The `<size>-<mtime>` name every per-build cache (keys, index, catalogue)
+/// is filed under for this executable.
+pub(crate) fn build_key(exe_path: &Path) -> Option<String> {
+    let meta = std::fs::metadata(exe_path).ok()?;
+    let modified = meta.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
+    Some(cache_entry_name(meta.len(), modified))
+}
+
 /// Accept either the executable itself or the folder holding it.
 pub fn resolve_exe(path: &Path) -> Result<PathBuf> {
     if path.is_dir() {

@@ -237,7 +237,7 @@ fn image_file_name(stem: &str, entry: Option<&str>, view: Option<&str>, ext: &st
 
 /// The views to render, each once, in the order first asked for; nothing
 /// asked for means the default iso view.
-fn unique_views(views: &[View]) -> Vec<View> {
+pub(crate) fn unique_views(views: &[View]) -> Vec<View> {
     let mut unique: Vec<View> = Vec::with_capacity(views.len());
     for view in views {
         if !unique.contains(view) {
@@ -286,11 +286,11 @@ fn summary_line(label: &str, report: &rage_render::RenderReport, parts: &str) ->
 }
 
 /// The label an entry is reported and named by.
-fn entry_label(entry: &DrawableEntry) -> String {
+pub(crate) fn entry_label(entry: &DrawableEntry) -> String {
     label_for(&entry.name, entry.hash)
 }
 
-fn label_for(name: &str, hash: u32) -> String {
+pub(crate) fn label_for(name: &str, hash: u32) -> String {
     if name.is_empty() {
         format!("0x{hash:08X}")
     } else {
@@ -300,10 +300,10 @@ fn label_for(name: &str, hash: u32) -> String {
 
 /// One image set to render: a plain drawable, a fragment's body with its
 /// wheels and doors placed on it, or a ped's components.
-struct Renderable<'a> {
-    label: String,
-    hash: u32,
-    parts: Vec<RenderPart<'a>>,
+pub(crate) struct Renderable<'a> {
+    pub(crate) label: String,
+    pub(crate) hash: u32,
+    pub(crate) parts: Vec<RenderPart<'a>>,
     /// Wheel slots drawn (including ones filled from another wheel's mesh).
     wheels: usize,
     /// What the composite's parts are called in the summary.
@@ -312,7 +312,7 @@ struct Renderable<'a> {
 
 /// Lists what to render: each .ydr/.ydd entry on its own; a fragment as one
 /// composite of body plus physics children, followed by its extra drawables.
-fn renderables(loaded: &Loaded) -> Vec<Renderable<'_>> {
+pub(crate) fn renderables(loaded: &Loaded) -> Vec<Renderable<'_>> {
     match loaded {
         Loaded::Entries(entries) => entries
             .iter()

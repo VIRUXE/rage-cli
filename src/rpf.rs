@@ -145,6 +145,25 @@ impl Archive {
         self.archive.extract_entry(self.data.bytes(), entry, keys)
     }
 
+    /// The inflated system section of an RSC7 resource entry (structs, names
+    /// and pointers, no vertex or pixel data). For an unencrypted RPF7 entry
+    /// it is inflated straight out of the archive's mapping and stops at the
+    /// end of the system section, so the graphics pages are never read;
+    /// anything else is extracted whole first.
+    pub fn resource_system(&self, file: &FileRef, keys: Option<&GtaKeys>) -> Result<Vec<u8>> {
+        let entry = &self.archive.entries[file.entry_index];
+        if let rpf_archive::RpfEntryKind::ResourceFile { file_offset, file_size, system_flags, is_encrypted: false, .. } = entry.kind
+            && matches!(self.archive.version, rpf_archive::RpfVersion::V7)
+            && file_size as usize > 16
+        {
+            let start = self.archive.start_offset + file_offset as usize * 512;
+            if let Some(body) = self.data.bytes().get(start + 16..start + file_size as usize) {
+                return rage_formats::inflate_rsc7_system(body, system_flags);
+            }
+        }
+        rage_formats::prepare_rsc7_system(&self.extract(file, keys)?)
+    }
+
     pub fn entry_kind(&self, file: &FileRef) -> &rpf_archive::RpfEntryKind {
         &self.archive.entries[file.entry_index].kind
     }

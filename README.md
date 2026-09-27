@@ -250,6 +250,23 @@ debug logging, `--no-update-check` to skip the daily release check.
 | `paths export <ynd> -o OBJ` | nodes as points and links as lines, grouped by kind (road, ped, off-road, shortcut, disabled); junction heightmaps as meshes |
 | `paths rewrite <ynd> -o FILE` | parse and write back unchanged; checks the writer against the game |
 
+### Catalogue
+
+`--db FILE` (env `RAGE_CATALOG`) picks the database; it defaults to
+`~/.rage-cli/catalog/<game build>/catalog.sqlite`, the same build key the
+index uses.
+
+| Command | Does |
+|---|---|
+| `catalog build [--game DIR] [--kind KIND,..] [--scope base,update,dlc] [--full] [--jobs N] [--names FILE] [--report FILE] [--strict] [--json]` | scan every archive in load order into a SQLite row per drawable, fragment, drawable/texture dictionary and texture; incremental unless `--full`, `--strict` exits non-zero on any parse failure |
+| `catalog search [WORDS...] [--kind] [--dlc PACK\|base\|update\|dlc] [--min-size N\|X,Y,Z] [--max-size ...] [--all-copies] [--annotated] [--limit 20] [--raw] [--semantic\|--hybrid] [--json]` | full-text search over names, archive paths and review notes |
+| `catalog get KEY -o DIR [--rpf] [--with-textures]` | write a catalogued entry out as a loose file, or its nested `.rpf`, or the `.ytd` files of its texture chain |
+| `catalog info [--json]` | database path, size, build, row and winner counts per kind, parse failures, annotation/packet/embedding counts |
+| `catalog sheet ...` | blind numbered contact sheets and a `packet.json` for a reviewer |
+| `catalog annotate ...` | import a reviewer's descriptions, checked against the tile image hashes |
+| `catalog pack export\|import ...` | text-only annotation packs |
+| `catalog embed ...` | local text embeddings (needs a build with `--features semantic`) |
+
 ### Maintenance
 
 | Command | Does |
@@ -759,6 +776,63 @@ rage screenshot ./nested/.../mp_biker_weed.rpf bkr_prop_weed_bag_01a.ydr --size 
 A full-install `*.ydr` search takes a couple of seconds and a single 512 px
 render under two seconds, so a few hundred props take minutes.
 
+### Find assets by what they are
+
+`search` finds files by name and path. `catalog` finds them by what they
+are: size, geometry, texture resolution, DLC pack, referenced textures. Build
+it once, then query it without touching the game files again:
+
+```sh
+rage catalog build          # --exe or GTAV_PATH: keys and the game folder
+rage catalog search chair --kind model --max-size 1.5
+rage catalog search --kind texture --min-size 2048 --dlc mpheist --json
+```
+
+`search chair` matches `Prop_ChairPlastic01a` because names are split on
+`_`, camelCase and digits. Sizes are metres for models and pixels for
+textures. When the same file ships in more than one archive, `search`
+reports only the winner — the copy the latest archive in load order would
+load — unless `--all-copies` is given.
+
+A hit inside a nested archive (most retail props are) can't be screenshotted
+directly: `catalog get KEY -o DIR --rpf` writes out the `.rpf` that holds it,
+same as extracting it by hand with `search`/`extract`. `--json` gives ready-
+to-run `rage screenshot`/`textures`/`resource info` commands per hit, plus
+the `catalog get` needed first for anything nested.
+
+A full `catalog build` over a legacy PC install (179 archives) takes about
+nine minutes cold on a two-core i3 with a SATA SSD and produces roughly
+86,000 drawables, 61,000 fragments and 540,000 textures in a ~1.1 GB
+database; base-game texture dictionaries alone take under half a minute.
+Texture dictionaries are read header-only, so pixel data is never touched.
+A rebuild with nothing changed takes two seconds, one changed DLC archive
+about half a minute, and a search tens of milliseconds (a single very broad
+word such as `prop` a quarter of a second).
+
+### Describe assets with a vision model
+
+Names only go so far. `catalog sheet` renders blind contact sheets of a
+selection, numbered tiles with no names, for an agent or a person to
+describe, and `catalog annotate` imports the descriptions, checked against
+each tile's image hash:
+
+```sh
+rage catalog sheet chair --kind model --limit 16 -o review
+# look at review/sheet-001.png, fill a copy of review/responses.template.json
+rage catalog annotate --packet review/packet.json --responses review/responses.json --verify-files
+rage catalog search red leather armchair      # descriptions are searchable at once
+rage catalog sheet --reveal pk_29558cb91294515d   # which asset each tile was, afterwards
+```
+
+A 16-tile sheet takes about half a second. Reviews can be shared as
+text-only packs (`catalog pack export|import`); an imported review is
+marked `shared-visual` and never replaces a local one. A build with
+`--features semantic` adds `catalog embed` and `search --semantic|--hybrid`
+over local embeddings (a 465 MB model downloaded to `~/.rage-cli/models` on
+first use; about 80 items a second on the same i3, so reviewed items are
+embedded by default and every model name only with `--models`).
+[AGENTS.md](AGENTS.md) is the full guide for an agent doing the reviewing.
+
 ### Drawable dictionaries and fragments
 
 Entries in a `.ydd` mostly share one name, the file's own, so they are
@@ -1115,7 +1189,8 @@ Things learned the hard way:
 | `RAGE_NO_UPDATE_CHECK` | disable the daily release check (also `CI`) |
 | `RAGE_UPDATE_CACHE` | where the update-check stamp lives |
 | `RAGE_NAMES` | the harvested hash-to-name list (default `~/.rage-cli/names.txt`) |
-| `~/.rage-cli/` | keys, index, names and update stamp; an existing `~/.rpf-cli` is used as is |
+| `RAGE_CATALOG` | the catalogue database file; same as `--db` (default `~/.rage-cli/catalog/<game build>/catalog.sqlite`) |
+| `~/.rage-cli/` | keys, index, catalogue, names and update stamp; an existing `~/.rpf-cli` is used as is |
 | `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY` | honoured by the update check and installer |
 
 The `RPF_*` spellings of the variables still work.
@@ -1183,6 +1258,16 @@ for `screenshot` when the embedded and `--ytd` textures are enough.
 `rage index info|build|clear` is hidden from the help, but still shows each
 part's state, rebuilds all of them, or deletes them.
 
+### The catalogue
+
+The catalogue is a separate SQLite database, per game build, under
+`~/.rage-cli/catalog/`; it never reads `index.bin` and `index` never reads
+it. Rebuilds are incremental: an archive whose size, mtime, first MiB and
+scanner version match a previous run is skipped, so `catalog build` after a
+game update only reparses what changed. Anything that failed to parse is
+listed in `catalog-report.json` beside the database rather than aborting the
+build; `--strict` turns that into a non-zero exit instead.
+
 ### Updating
 
 ```sh
@@ -1214,6 +1299,16 @@ src/
     names.rs         `names`: harvesting the game's names, lookups
     ymap.rs          `ymap from-menyoo`: a map from a Menyoo spooner XML, CodeWalker's import
     manifest.rs      `manifest generate`: a _manifest.ymf from a folder's maps and type files, CodeWalker's layout
+    catalog.rs       `catalog`: clap args and printing for build/search/get/info/sheet/annotate/pack/embed
+  catalog/
+    mod.rs           the Catalog handle, kinds, keys, db path
+    schema.rs        SQLite DDL, FTS5, migrations
+    scan.rs          build: load order, incremental plan, parallel per-entry parse, single writer, winners, names
+    search.rs        FTS queries, filters, hit JSON, follow-up commands
+    tokens.rs        the name tokenizer and safe FTS query builder
+    loader.rs        archive cache, texture chains for rendering
+    sheet.rs         blind contact sheets and packets
+    annotate.rs      review import
   plot_inputs.rs     turning plot's free-form inputs (files, a resource folder, a vanilla name) into parsed sources
   region.rs          a box of the vanilla map assembled as CodeWalker streams it: cache map nodes, the LOD tree, the visible leaves
   props.rs           what to draw for a placed entity: a folder model, a game model through the index, a box, or nothing
@@ -1239,6 +1334,8 @@ Rules of thumb for changes:
   stderr, so `--json` and OBJ/PNG outputs stay pipeable.
 - A new command gets a `--help` that explains the domain, not just the flag,
   and a fixture test in `tests/`.
+- Agent-facing output is JSON with provenance; nothing in a review packet
+  names an asset.
 
 ## Releasing
 
@@ -1252,6 +1349,11 @@ cargo install --path . \
   --config 'patch.crates-io.rage-formats.path="../rage-formats"' \
   --config 'patch.crates-io.rage-render.path="../rage-render"'
 ```
+
+Release binaries are built without the `semantic` feature (it links ONNX
+Runtime and adds ~25 MB); `catalog embed` and `search --semantic|--hybrid`
+need `cargo install rage-cli --features semantic`. `catalog` needs
+`rage-formats` 0.2.3 or later (`parse_ytd_system`, `inflate_rsc7_system`).
 
 To cut a release:
 
