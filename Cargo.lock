@@ -723,7 +723,7 @@ checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 
 [[package]]
 name = "rage-cli"
-version = "0.20.1"
+version = "0.21.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -745,9 +745,9 @@ dependencies = [
 
 [[package]]
 name = "rage-formats"
-version = "0.2.2"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2d8a7426cd2be57d24de7f48ddb578abec0e5869ea8f07649c747a4fc18d3df3"
+checksum = "6bfd28da9c848c3b174a8155f7e7a4c452053e9088f4bece9ccf42a5bcc48a63"
 dependencies = [
  "anyhow",
  "flate2",
