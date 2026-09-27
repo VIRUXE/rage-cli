@@ -19,7 +19,7 @@
 
 use anyhow::{bail, Context, Result};
 use std::collections::{HashMap, HashSet};
-use std::io::{Read, Write};
+use std::io::{IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 
 use rage_formats::{parse_cache_dat, parse_txd_relationships, parse_ymap_entities, parse_ytd, parse_ytyp, rage_joaat, Vec3};
@@ -205,7 +205,9 @@ impl GameIndex {
                 part
             })
             .collect();
-        eprint!("\r{:<78}\r", "");
+        if std::io::stderr().is_terminal() {
+            eprint!("\r{:<78}\r", "");
+        }
 
         // `collect` keeps `archives`' order, so this replays a serial scan.
         let mut index = GameIndex::default();
@@ -598,8 +600,12 @@ fn read_placements(
     out
 }
 
-/// One `\r`-overwritten stderr line per archive while the index is built.
+/// One `\r`-overwritten stderr line per archive while the index is built,
+/// on a terminal only: captured output gets the "Indexing..." line alone.
 fn progress(n: usize, total: usize, archive: &Path) {
+    if !std::io::stderr().is_terminal() {
+        return;
+    }
     let name = archive.to_string_lossy().replace('\\', "/");
     let label = if name.len() > 50 { format!("...{}", &name[name.len() - 47..]) } else { name };
     eprint!("\r[{n:>3}/{total}] {label:<52}");

@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use std::{cell::Cell, fs, io::{self, Write}, path::{Path, PathBuf}};
+use std::{cell::Cell, fs, io::{self, IsTerminal, Write}, path::{Path, PathBuf}};
 use crate::rpf::{Archive, FileRef, GtaKeys};
 use crate::utils::matches_pattern;
 
@@ -196,8 +196,10 @@ fn extract_recursive(
                 let n = ok.get() + 1;
                 ok.set(n);
                 let label = if file.name.len() > 40 { format!("...{}", &file.name[file.name.len() - 37..]) } else { file.name.clone() };
-                print!("\r[recursive] extracted {} {:<42}", n, label);
-                io::stdout().flush().ok();
+                if io::stderr().is_terminal() {
+                    eprint!("\r[recursive] extracted {} {:<42}", n, label);
+                    io::stderr().flush().ok();
+                }
             }
             Err(e) => {
                 eprintln!("\nWrite failed {}: {}", dest.display(), e);
@@ -208,6 +210,9 @@ fn extract_recursive(
 }
 
 fn print_progress(n: usize, total: usize, name: &str) {
+    if !io::stderr().is_terminal() {
+        return;
+    }
     let pct = n as f32 / total as f32;
     let filled = (pct * 30.0) as usize;
     let bar = if filled >= 30 {
@@ -216,6 +221,6 @@ fn print_progress(n: usize, total: usize, name: &str) {
         format!("{}>{}",  "=".repeat(filled), " ".repeat(29 - filled))
     };
     let label = if name.len() > 40 { format!("...{}", &name[name.len()-37..]) } else { name.to_string() };
-    print!("\r[{}] {}/{} {:<40}", bar, n, total, label);
-    io::stdout().flush().ok();
+    eprint!("\r[{}] {}/{} {:<40}", bar, n, total, label);
+    io::stderr().flush().ok();
 }
