@@ -167,7 +167,7 @@ debug logging, `--no-update-check` to skip the daily release check.
 
 | Command | Does |
 |---|---|
-| `resource info <file> [--archive RPF] [--json] [--limit N] [--names FILE]...` | header plus a summary: every texture of a `.ytd`; bounds, LODs, geometry and shaders of a drawable; name, flags, extents and entity table of a `.ymap`; archetypes and interiors of a `.ytyp`; dependencies of a `_manifest.ymf` (PSO, RBF or XML) |
+| `resource info <file> [--archive RPF] [--json] [--limit N] [--names FILE]...` | header plus a summary: every texture of a `.ytd`; bounds, LODs, geometry and shaders of a drawable; name, flags, extents and entity table of a `.ymap`; archetypes and interiors of a `.ytyp`; dependencies of a `_manifest.ymf` (PSO, RBF or XML); a `.ydr` also its skeleton bones, lights and collision bound |
 | `resource dump <file> [--archive RPF] [--json] [-o FILE] [--names FILE]...` | any Meta or PSO file (`.ymap` `.ytyp` `.ymt` `.ymf` `.pso`) as XML in CodeWalker's layout, or as JSON |
 | `resource dump <file.ydr\|file.ybn> [--archive RPF] [-o FILE] [--no-dds]` | a drawable or a collision bound as CodeWalker's XML (`<Drawable>` / `<BoundsFile>`), its embedded textures saved as `.dds` beside `-o` (or in the current folder) unless `--no-dds`; XML only, no `--json` |
 | `resource rename <file> <name> [--from NAME] [-o FILE] [--dry-run]` | change a name inside a file in place: a `.ymap`'s own name (the default), or any hash field or XML value equal to `--from`, in Meta, PSO and XML files |
@@ -453,18 +453,6 @@ rage resource dump _manifest.ymf --json -o manifest.json
 rage resource build manifest.json -o _manifest.ymf
 ```
 
-### Drawables and bounds from XML
-
-```sh
-rage resource dump prop_x.ydr -o prop_x.xml        # prop_x.xml, plus one .dds per embedded texture
-rage resource build prop_x.xml -o prop_x.ydr       # textures read from the XML's folder (or --textures DIR)
-rage resource dump collision.ybn -o collision.xml
-rage resource build collision.xml -o collision.ybn
-```
-
-`resource info` on a `.ydr` also lists its skeleton (bone count), lights and
-collision bound.
-
 `build` is `dump` run backwards. It takes the XML (CodeWalker's layout) or
 JSON that `dump` writes, edited or not, and produces the binary file: an
 RSC7 Meta container for `.ymap`, `.ytyp` and `.ymt`, a PSO file for
@@ -508,6 +496,18 @@ resource the map is in, and the same notes and warnings come out, prefixed
 with the file. A map whose round trip through the Meta writer would lose
 anything (a structure with no schema, say) is reported and left alone.
 `--json` lists each file's values before and after.
+
+### Drawables and bounds from XML
+
+```sh
+rage resource dump prop_x.ydr -o prop_x.xml        # prop_x.xml, plus one .dds per embedded texture
+rage resource build prop_x.xml -o prop_x.ydr       # textures read from the XML's folder (or --textures DIR)
+rage resource dump collision.ybn -o collision.xml
+rage resource build collision.xml -o collision.ybn
+```
+
+`resource info` on a `.ydr` also lists its skeleton (bone count), lights and
+collision bound.
 
 ### Declare archetypes for new models
 

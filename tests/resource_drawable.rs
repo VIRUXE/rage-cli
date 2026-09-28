@@ -62,6 +62,7 @@ fn a_missing_texture_file_names_the_path() {
     std::fs::write(&p, xml).unwrap();
     let err = fails(&["resource", "build", s(&p), "-o", s(&dir.path().join("t.ydr"))]);
     assert!(err.contains("gone.dds"), "{err}");
+    assert!(err.contains(dir.path().to_str().unwrap()), "{err}");
 }
 
 #[test]
@@ -90,4 +91,20 @@ fn drawables_do_not_dump_as_json_and_the_format_is_sniffed_from_the_xml() {
     let odd = dir.path().join("out.bin");
     let (_, err) = ok(&["resource", "build", s(&xml), "-o", s(&odd)]);
     assert!(err.contains("RSC7 drawable"), "{err}");
+}
+
+const BOX_BOUND: &str = include_str!("fixtures/box_bounds_fragment.xml");
+
+#[test]
+fn info_lists_a_drawables_bound() {
+    let dir = tempfile::tempdir().unwrap();
+    let with_bound = XML.replace("</Drawable>", &format!("{BOX_BOUND}</Drawable>"));
+    let xml = dir.path().join("boxed.xml");
+    std::fs::write(&xml, with_bound).unwrap();
+    let ydr = dir.path().join("boxed.ydr");
+    ok(&["resource", "build", s(&xml), "-o", s(&ydr)]);
+    let (out, _) = ok(&["resource", "info", s(&ydr)]);
+    assert!(out.lines().any(|l| l.contains("bound:") && l.contains("Box")), "{out}");
+    let (json, _) = ok(&["resource", "info", s(&ydr), "--json"]);
+    assert!(json.contains("\"bound\":{\"kind\":\"Box\"}"), "{json}");
 }

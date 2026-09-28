@@ -1,0 +1,18 @@
+  <Bounds type="Box">
+    <BoxMin x="-1" y="-1" z="-1" />
+    <BoxMax x="1" y="1" z="1" />
+    <BoxCenter x="0" y="0" z="0" />
+    <SphereCenter x="0" y="0" z="0" />
+    <SphereRadius value="1.7320508" />
+    <Margin value="0.04" />
+    <Volume value="8" />
+    <Inertia x="2.6666667" y="2.6666667" z="2.6666667" />
+    <MaterialIndex value="0" />
+    <MaterialColourIndex value="0" />
+    <ProceduralID value="0" />
+    <RoomID value="0" />
+    <PedDensity value="0" />
+    <UnkFlags value="0" />
+    <PolyFlags value="0" />
+    <UnkType value="1" />
+  </Bounds>
