@@ -16,6 +16,7 @@ use rage_formats::{
 };
 
 use crate::resources::load_resource_bytes;
+use super::resource_drawable as drawable;
 use crate::rpf::GtaKeys;
 use crate::utils::json_string;
 
@@ -29,11 +30,11 @@ pub struct ResourceArgs {
 pub enum ResourceCommand {
     /// Print the header and a summary of a .ydr/.ydd/.yft/.ytd/.ymap/.ytyp/.ymf
     Info(InfoArgs),
-    /// Write a Meta or PSO file (.ymap .ytyp .ymt .ymf .pso) out as XML or JSON
+    /// Write a Meta or PSO file (.ymap .ytyp .ymt .ymf .pso) out as XML or JSON; a .ydr or .ybn as XML (textures as .dds)
     Dump(DumpArgs),
     /// Change a name inside a .ymap (its own name), a .ymf or any Meta/PSO/XML file, in place
     Rename(RenameArgs),
-    /// Build a .ymap/.ytyp/.ymt or a _manifest.ymf/.pso from XML or JSON written by `dump`
+    /// Build a .ymap/.ytyp/.ymt, a _manifest.ymf/.pso, a .ydr or a .ybn from XML or JSON written by `dump`
     Build(BuildArgs),
     /// Fix the flags and extents of .ymap files in place (a file, or every .ymap in a folder)
     Recalc(RecalcArgs),
@@ -69,8 +70,8 @@ pub struct BuildArgs {
     #[arg(short, long, value_name = "FILE")]
     pub output: PathBuf,
 
-    /// meta (RSC7 .ymap/.ytyp/.ymt) or pso (.ymf/.pso); default: by the output extension
-    #[arg(long, value_name = "meta|pso")]
+    /// meta (RSC7 .ymap/.ytyp/.ymt), pso (.ymf/.pso), ydr or ybn; default: by the output extension
+    #[arg(long, value_name = "meta|pso|ydr|ybn")]
     pub format: Option<String>,
 
     /// Binary Meta/PSO files whose structure definitions take precedence
@@ -93,6 +94,11 @@ pub struct BuildArgs {
     /// then the game's own through the index (--exe / GTAV_PATH)
     #[arg(long, value_name = "PATH")]
     pub ytyp: Vec<PathBuf>,
+
+    /// The folder a drawable's <FileName>.dds textures are read from;
+    /// default: the XML's own folder
+    #[arg(long, value_name = "DIR")]
+    pub textures: Option<PathBuf>,
 }
 
 #[derive(clap::Args)]
@@ -164,6 +170,11 @@ pub struct DumpArgs {
     /// Extra name lists (one name per line) for resolving hashes; repeatable
     #[arg(long, value_name = "FILE")]
     pub names: Vec<PathBuf>,
+
+    /// Do not save a drawable's embedded textures as .dds files
+    /// (they go beside --output, or into the current folder)
+    #[arg(long)]
+    pub no_dds: bool,
 }
 
 /// "FXAP": the header Cfx.re asset escrow puts on encrypted stream files.
@@ -253,7 +264,9 @@ pub fn parse_header(data: &[u8]) -> Result<Rsc7Header> {
 /// that, the container.
 pub enum Contents {
     Textures(Vec<YtdTexture>),
-    Drawables(Vec<DrawableEntry>),
+    Drawables(Vec<DrawableEntry>, Option<drawable::DrawableExtras>),
+    /// A `.ybn`: its root bound.
+    Bounds(drawable::BoundInfo),
     Map(Ymap),
     Types(Ytyp),
     Manifest(Manifest),
@@ -269,12 +282,22 @@ fn extension_of(name: &str) -> String {
 fn parse_contents(name: &str, data: &[u8], container: &Container) -> Result<Contents> {
     let ext = extension_of(name);
     match container {
-        Container::Rsc7(_) => {
+        Container::Rsc7(header) => {
             if ext == "ytd" {
                 return Ok(Contents::Textures(parse_ytd(data).context("failed to parse texture dictionary")?));
             }
             if let Some(kind) = DrawableKind::from_extension(&ext) {
-                return Ok(Contents::Drawables(parse_drawables(data, kind).context("failed to parse drawable")?));
+                let entries = parse_drawables(data, kind).context("failed to parse drawable")?;
+                // The block reader adds skeleton, lights and bound; a file it rejects keeps the plain summary.
+                let extras = if ext == "ydr" { drawable::DrawableExtras::read(data) } else { None };
+                return Ok(Contents::Drawables(entries, extras));
+            }
+            // A bounds resource is version 43; any other body is not read as one.
+            if ext == "ybn"
+                && header.version == 43
+                && let Some(info) = drawable::read_bound_info(data)
+            {
+                return Ok(Contents::Bounds(info));
             }
             match ext.as_str() {
                 "ymap" => Ok(Contents::Map(parse_ymap(data).context("failed to parse map")?)),
@@ -414,17 +437,29 @@ fn run_build(args: &BuildArgs, keys: Option<&GtaKeys>, exe: Option<&Path>) -> Re
     use rage_formats::{build_meta, build_pso, dump_meta, dump_pso, from_json, from_xml, Schema};
 
     let text = std::fs::read_to_string(&args.file).with_context(|| format!("failed to read '{}'", args.file.display()))?;
+    let out_ext = args.output.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+    // Drawables and bounds are built from their own XML, not the generic Meta tree.
+    let drawable_kind = match args.format.as_deref().map(str::to_lowercase).as_deref() {
+        Some("ydr") => Some("ydr"),
+        Some("ybn") => Some("ybn"),
+        Some(_) => None,
+        None if matches!(out_ext.as_str(), "ydr" | "ybn") => drawable::kind_of_name(&args.output.to_string_lossy()),
+        None if matches!(out_ext.as_str(), "ymf" | "pso" | "ymap" | "ytyp" | "ymt") => None,
+        None => drawable::sniff_xml(&text),
+    };
+    if let Some(kind) = drawable_kind {
+        return drawable::build(kind, &text, args);
+    }
     let mut value = if text.trim_start().starts_with('{') {
         from_json(&text).with_context(|| format!("'{}'", args.file.display()))?
     } else {
         from_xml(&text).with_context(|| format!("'{}'", args.file.display()))?
     };
 
-    let out_ext = args.output.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
     let format = match args.format.as_deref().map(str::to_lowercase).as_deref() {
         Some("meta") => "meta",
         Some("pso") => "pso",
-        Some(other) => bail!("--format {other}: expected meta or pso"),
+        Some(other) => bail!("--format {other}: expected meta or pso (or ydr, ybn for a drawable or bound)"),
         None if matches!(out_ext.as_str(), "ymf" | "pso") => "pso",
         None if matches!(out_ext.as_str(), "ymap" | "ytyp" | "ymt") => "meta",
         None => bail!("cannot tell the container from '.{out_ext}'; write a .ymap/.ytyp/.ymt or .ymf/.pso, or pass --format"),
@@ -852,6 +887,9 @@ impl Checks {
 fn run_dump(args: &DumpArgs, keys: Option<&GtaKeys>) -> Result<()> {
     let data = load_resource_bytes(&args.file, args.archive.as_deref(), keys)?;
     let container = detect(&data).with_context(|| format!("'{}'", args.file))?;
+    if let (Container::Rsc7(_), Some(kind)) = (&container, drawable::kind_of_name(&args.file)) {
+        return run_dump_drawable(kind, &data, args);
+    }
     let dump = match container {
         Container::Rsc7(_) => dump_meta(&data).with_context(|| {
             format!("'{}' is an RSC7 resource but not a Meta file (only .ymap/.ytyp/.ymt carry a schema to dump)", args.file)
@@ -872,6 +910,20 @@ fn run_dump(args: &DumpArgs, keys: Option<&GtaKeys>) -> Result<()> {
     }
     if let Some(note) = unresolved_note(&text) {
         eprint!("{note}");
+    }
+    Ok(())
+}
+
+/// `dump` of a `.ydr` or `.ybn`: XML only, textures as `.dds` beside the output.
+fn run_dump_drawable(kind: &str, data: &[u8], args: &DumpArgs) -> Result<()> {
+    let names = crate::names::load(&args.names, local_path(&args.file, args.archive.as_deref()).as_deref())?;
+    let text = drawable::dump(kind, data, &names, args.output.as_deref(), args.no_dds, args.json).with_context(|| format!("'{}'", args.file))?;
+    match &args.output {
+        Some(path) => {
+            std::fs::write(path, &text).with_context(|| format!("writing {}", path.display()))?;
+            eprintln!("Wrote {}", path.display());
+        }
+        None => print!("{text}"),
     }
     Ok(())
 }
@@ -951,12 +1003,16 @@ fn write_text(out: &mut String, args: &InfoArgs, container: &Container, contents
                 write_texture_line(out, tex);
             }
         }
-        Contents::Drawables(entries) => {
+        Contents::Drawables(entries, extras) => {
             writeln!(out, "Drawables: {}", entries.len()).unwrap();
             for entry in entries {
                 write_drawable(out, entry, verbose);
+                if let Some(extras) = extras {
+                    extras.write_text(out);
+                }
             }
         }
+        Contents::Bounds(info) => writeln!(out, "Bounds:    {}", info.label()).unwrap(),
         Contents::Map(ymap) => write_map(out, ymap, names, checks, args.limit),
         Contents::Types(ytyp) => write_types(out, ytyp, names, args.limit),
         Contents::Manifest(manifest) => write_manifest(out, manifest, names, checks),
@@ -1205,8 +1261,12 @@ fn write_json(out: &mut String, args: &InfoArgs, container: &Container, contents
     let (kind, body) = match contents {
         Contents::Other => ("other", String::new()),
         Contents::Textures(textures) => ("textures", format!(",\"textures\":{}", json_textures(textures))),
-        Contents::Drawables(entries) => {
-            let items: Vec<String> = entries.iter().map(|e| json_drawable(e, verbose)).collect();
+        Contents::Bounds(info) => {
+            let children = info.children.map_or(String::new(), |n| format!(",\"children\":{n}"));
+            ("bounds", format!(",\"bound\":{{\"kind\":\"{}\"{children}}}", info.kind.name()))
+        }
+        Contents::Drawables(entries, extras) => {
+            let items: Vec<String> = entries.iter().map(|e| json_drawable(e, extras.as_ref(), verbose)).collect();
             ("drawables", format!(",\"drawables\":[{}]", items.join(",")))
         }
         Contents::Map(ymap) => ("map", format!(",\"map\":{}", json_map(ymap, names, checks).dump())),
@@ -1374,7 +1434,7 @@ fn json_geometry_bounds(geoms: &[rage_formats::GeometryBounds]) -> String {
     format!("[{}]", items.join(","))
 }
 
-fn json_drawable(entry: &DrawableEntry, verbose: bool) -> String {
+fn json_drawable(entry: &DrawableEntry, extras: Option<&drawable::DrawableExtras>, verbose: bool) -> String {
     let d = &entry.drawable;
     let (bounds, computed) = match d.best_lod() {
         Some(lod) => d.bounds_or_computed(lod),
@@ -1407,12 +1467,12 @@ fn json_drawable(entry: &DrawableEntry, verbose: bool) -> String {
     };
 
     format!(
-        "{{\"name\":{},\"hash\":\"0x{:08X}\",\"bounds\":{{\"center\":{},\"radius\":{},\"min\":{},\"max\":{},\"computed\":{}}}{},\"lod_distances\":[{},{},{},{}],\"lods\":[{}],\"shaders\":{},\"textures\":{}}}",
+        "{{\"name\":{},\"hash\":\"0x{:08X}\",\"bounds\":{{\"center\":{},\"radius\":{},\"min\":{},\"max\":{},\"computed\":{}}}{},\"lod_distances\":[{},{},{},{}],\"lods\":[{}],\"shaders\":{},\"textures\":{}{}}}",
         json_string(if d.name.is_empty() { &entry.name } else { &d.name }), entry.hash,
         json_vec3(&bounds.center), bounds.sphere_radius, json_vec3(&bounds.box_min), json_vec3(&bounds.box_max), computed,
         geometry_bounds,
         d.lod_distances[0], d.lod_distances[1], d.lod_distances[2], d.lod_distances[3],
-        lods.join(","), shaders, textures,
+        lods.join(","), shaders, textures, extras.map(drawable::DrawableExtras::json_members).unwrap_or_default(),
     )
 }
 

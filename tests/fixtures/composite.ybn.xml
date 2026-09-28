@@ -1,0 +1,99 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<BoundsFile>
+  <Bounds type="Composite">
+    <BoxMin x="-1" y="-1" z="0" />
+    <BoxMax x="4" y="1" z="1" />
+    <BoxCenter x="1.5" y="0" z="0.5" />
+    <SphereCenter x="1.5" y="0" z="0.5" />
+    <SphereRadius value="3" />
+    <Margin value="0.04" />
+    <Volume value="1" />
+    <Inertia x="1" y="1" z="1" />
+    <MaterialIndex value="0" />
+    <MaterialColourIndex value="0" />
+    <ProceduralID value="0" />
+    <RoomID value="0" />
+    <PedDensity value="0" />
+    <UnkFlags value="0" />
+    <PolyFlags value="0" />
+    <UnkType value="1" />
+    <Children>
+      <Item type="Box">
+        <BoxMin x="-0.5" y="-0.5" z="-0.5" />
+        <BoxMax x="0.5" y="0.5" z="0.5" />
+        <BoxCenter x="0" y="0" z="0" />
+        <SphereCenter x="0" y="0" z="0" />
+        <SphereRadius value="0.866025" />
+        <Margin value="0.04" />
+        <Volume value="1" />
+        <Inertia x="0.1666667" y="0.1666667" z="0.1666667" />
+        <MaterialIndex value="0" />
+        <MaterialColourIndex value="0" />
+        <ProceduralID value="0" />
+        <RoomID value="0" />
+        <PedDensity value="0" />
+        <UnkFlags value="0" />
+        <PolyFlags value="0" />
+        <UnkType value="1" />
+        <CompositeTransform>
+          1 0 0 0
+          0 1 0 0
+          0 0 1 0
+          3 0 0 1
+        </CompositeTransform>
+        <CompositeFlags1>MAP_WEAPON, MAP_COVER</CompositeFlags1>
+        <CompositeFlags2>MAP_DYNAMIC</CompositeFlags2>
+      </Item>
+      <Item type="GeometryBVH">
+        <BoxMin x="0" y="0" z="0" />
+        <BoxMax x="2" y="1" z="0" />
+        <BoxCenter x="1" y="0.5" z="0" />
+        <SphereCenter x="1" y="0.5" z="0" />
+        <SphereRadius value="1.118034" />
+        <Margin value="0.04" />
+        <Volume value="0" />
+        <Inertia x="0" y="0" z="0" />
+        <MaterialIndex value="0" />
+        <MaterialColourIndex value="0" />
+        <ProceduralID value="0" />
+        <RoomID value="0" />
+        <PedDensity value="0" />
+        <UnkFlags value="0" />
+        <PolyFlags value="0" />
+        <UnkType value="1" />
+        <CompositeTransform>
+          1 0 0 0
+          0 1 0 0
+          0 0 1 0
+          0 0 0 1
+        </CompositeTransform>
+        <CompositeFlags1>MAP_WEAPON, MAP_COVER</CompositeFlags1>
+        <CompositeFlags2>MAP_DYNAMIC</CompositeFlags2>
+        <GeometryCenter x="1" y="0.5" z="0" />
+        <UnkFloat1 value="0" />
+        <UnkFloat2 value="0" />
+        <Materials>
+          <Item>
+            <Type value="1" />
+            <ProceduralID value="0" />
+            <RoomID value="0" />
+            <PedDensity value="0" />
+            <Flags>NONE</Flags>
+            <MaterialColourIndex value="0" />
+            <Unk value="0" />
+          </Item>
+        </Materials>
+        <Vertices>
+          -1, -0.5, 0
+          1, -0.5, 0
+          1, 0.5, 0
+          -1, 0.5, 0
+        </Vertices>
+        <Polygons>
+          <Triangle m="0" v1="0" v2="1" v3="2" f1="0" f2="0" f3="0" />
+          <Triangle m="0" v1="0" v2="2" v3="3" f1="0" f2="0" f3="0" />
+        </Polygons>
+      </Item>
+    </Children>
+  </Bounds>
+</BoundsFile>

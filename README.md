@@ -169,8 +169,10 @@ debug logging, `--no-update-check` to skip the daily release check.
 |---|---|
 | `resource info <file> [--archive RPF] [--json] [--limit N] [--names FILE]...` | header plus a summary: every texture of a `.ytd`; bounds, LODs, geometry and shaders of a drawable; name, flags, extents and entity table of a `.ymap`; archetypes and interiors of a `.ytyp`; dependencies of a `_manifest.ymf` (PSO, RBF or XML) |
 | `resource dump <file> [--archive RPF] [--json] [-o FILE] [--names FILE]...` | any Meta or PSO file (`.ymap` `.ytyp` `.ymt` `.ymf` `.pso`) as XML in CodeWalker's layout, or as JSON |
+| `resource dump <file.ydr\|file.ybn> [--archive RPF] [-o FILE] [--no-dds]` | a drawable or a collision bound as CodeWalker's XML (`<Drawable>` / `<BoundsFile>`), its embedded textures saved as `.dds` beside `-o` (or in the current folder) unless `--no-dds`; XML only, no `--json` |
 | `resource rename <file> <name> [--from NAME] [-o FILE] [--dry-run]` | change a name inside a file in place: a `.ymap`'s own name (the default), or any hash field or XML value equal to `--from`, in Meta, PSO and XML files |
 | `resource build <file.xml\|file.json> -o FILE [--format meta\|pso] [--schema FILE]... [--strict] [--no-recalc] [--ytyp PATH]...` | the inverse of `dump`: a `.ymap`/`.ytyp`/`.ymt` (RSC7 Meta) or `_manifest.ymf`/`.pso` (PSO) from the XML or JSON, using CodeWalker's structure tables, or those of the original file with `--schema` |
+| `resource build <file.xml> -o FILE.ydr\|FILE.ybn [--textures DIR]` | the inverse of the drawable/bound `dump`: a `.ydr` (version 165) or `.ybn` (version 43) from CodeWalker's XML, textures read from `DIR` (default: the XML's folder); the written file is read back and must dump identically, or nothing is written |
 | `resource recalc <ymap\|folder>... [--ytyp PATH]... [--dry-run] [--json]` | fix `.ymap` flags, `contentFlags` and extents in place, as `build` works them out; a folder is searched for every `.ymap`, and a file is rewritten only when something changed |
 | `ytyp from-drawables <file\|dir>... -o FILE.ytyp [--txd NAME] [--lod-dist N] [--hd-dist N] [--flags N] [--merge FILE]` | a type file declaring an archetype for every `.ydr`, `.ydd` entry and `.yft`, with the bounds read from the model, as CodeWalker's "New Archetype from YDR" does; `--merge` adds to an existing `.ytyp` |
 | `ymap from-menyoo <file.xml> -o FILE.ymap [--name NAME] [--lod-dist N] [--ytyp PATH]... [--no-recalc]` | a map from a Menyoo spooner XML, as CodeWalker's "Import Menyoo XML" makes it: props become entities, vehicles car generators, peds are left out; flags and extents worked out as `resource build` does |
@@ -450,6 +452,18 @@ rage resource build casas.xml -o casas_praia_extras.ymap    # and write the map 
 rage resource dump _manifest.ymf --json -o manifest.json
 rage resource build manifest.json -o _manifest.ymf
 ```
+
+### Drawables and bounds from XML
+
+```sh
+rage resource dump prop_x.ydr -o prop_x.xml        # prop_x.xml, plus one .dds per embedded texture
+rage resource build prop_x.xml -o prop_x.ydr       # textures read from the XML's folder (or --textures DIR)
+rage resource dump collision.ybn -o collision.xml
+rage resource build collision.xml -o collision.ybn
+```
+
+`resource info` on a `.ydr` also lists its skeleton (bone count), lights and
+collision bound.
 
 `build` is `dump` run backwards. It takes the XML (CodeWalker's layout) or
 JSON that `dump` writes, edited or not, and produces the binary file: an

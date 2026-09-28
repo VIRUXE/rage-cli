@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Drawable>
+  <Name>tri_prop</Name>
+  <BoundingSphereCenter x="0" y="0" z="0" />
+  <BoundingSphereRadius value="1.5" />
+  <BoundingBoxMin x="-1" y="-1" z="0" />
+  <BoundingBoxMax x="1" y="1" z="1" />
+  <LodDistHigh value="9998" />
+  <LodDistMed value="9998" />
+  <LodDistLow value="9998" />
+  <LodDistVlow value="9998" />
+  <FlagsHigh value="0" />
+  <FlagsMed value="0" />
+  <FlagsLow value="0" />
+  <FlagsVlow value="0" />
+  <ShaderGroup>
+    <TextureDictionary />
+    <Shaders>
+      <Item>
+        <Name>default</Name>
+        <FileName>default.sps</FileName>
+        <RenderBucket value="0" />
+        <Parameters>
+          <Item name="DiffuseSampler" type="Texture">
+            <Name>missing_tex</Name>
+          </Item>
+        </Parameters>
+      </Item>
+    </Shaders>
+  </ShaderGroup>
+  <DrawableModelsHigh>
+    <Item>
+      <RenderMask value="255" />
+      <Flags value="0" />
+      <HasSkin value="0" />
+      <BoneIndex value="0" />
+      <Unknown1 value="0" />
+      <Geometries>
+        <Item>
+          <ShaderIndex value="0" />
+          <BoundingBoxMin x="-1" y="-1" z="0" w="0" />
+          <BoundingBoxMax x="1" y="1" z="1" w="0" />
+          <VertexBuffer>
+            <Flags value="0" />
+            <Layout type="GTAV1">
+              <Position />
+              <Normal />
+              <Colour0 />
+              <TexCoord0 />
+            </Layout>
+            <Data>
+              -1 -1 0   0 0 1   255 255 255 255   0 0
+              1 -1 0   0 0 1   255 255 255 255   1 0
+              0 1 1   0 0 1   255 255 255 255   0.5 1
+            </Data>
+          </VertexBuffer>
+          <IndexBuffer>
+            <Data>0 1 2</Data>
+          </IndexBuffer>
+        </Item>
+      </Geometries>
+    </Item>
+  </DrawableModelsHigh>
+</Drawable>
