@@ -920,6 +920,10 @@ fn run_dump_drawable(kind: &str, data: &[u8], args: &DumpArgs) -> Result<()> {
     let text = drawable::dump(kind, data, &names, args.output.as_deref(), args.no_dds, args.json).with_context(|| format!("'{}'", args.file))?;
     match &args.output {
         Some(path) => {
+            // as `resource build` does, and as a `.ydr` dump already did for its textures
+            if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+                std::fs::create_dir_all(parent).with_context(|| format!("failed to create {}", parent.display()))?;
+            }
             std::fs::write(path, &text).with_context(|| format!("writing {}", path.display()))?;
             eprintln!("Wrote {}", path.display());
         }
