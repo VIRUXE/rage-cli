@@ -21,9 +21,9 @@ log = "0.4"
 env_logger = "0.11"
 clap = { version = "4.5", features = ["derive", "env"] }
 rpf-archive = "0.10"
-rage-formats = { path = "../rage-formats" }
+rage-formats = "0.4.0"
 glob = "0.3"
-rage-render = { path = "../rage-render" }
+rage-render = "0.4"
 ureq = "3.4"
 json = "0.12"
 roxmltree = "0.20"
@@ -33,7 +33,7 @@ rayon = "1.12.0"
 
 [dev-dependencies]
 tempfile = "3.10"
-rage-formats = { path = "../rage-formats", features = ["test-support"] }
+rage-formats = { version = "0.4.0", features = ["test-support"] }
 
 # Cross-compilation targets
 [target.'cfg(windows)'.dependencies]
