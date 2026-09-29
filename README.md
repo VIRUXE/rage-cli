@@ -190,6 +190,7 @@ debug logging, `--no-update-check` to skip the daily release check.
 | `resource recalc <ymap\|folder>... [--ytyp PATH]... [--dry-run] [--json]` | fix `.ymap` flags, `contentFlags` and extents in place, as `build` works them out; a folder is searched for every `.ymap`, and a file is rewritten only when something changed |
 | `ytyp from-drawables <file\|dir>... -o FILE.ytyp [--txd NAME] [--lod-dist N] [--hd-dist N] [--flags N] [--merge FILE]` | a type file declaring an archetype for every `.ydr`, `.ydd` entry and `.yft`, with the bounds read from the model, as CodeWalker's "New Archetype from YDR" does; `--merge` adds to an existing `.ytyp` |
 | `ymap from-menyoo <file.xml> -o FILE.ymap [--name NAME] [--lod-dist N] [--ytyp PATH]... [--no-recalc]` | a map from a Menyoo spooner XML, as CodeWalker's "Import Menyoo XML" makes it: props become entities, vehicles car generators, peds are left out; flags and extents worked out as `resource build` does |
+| `ymap lodlights <ymap\|folder>... [-o DIR] [--name NAME] [--ytyp PATH]... [--models PATH]...` | the LOD lights of a resource's maps, as CodeWalker's project "LOD lights generator" writes them: every light of every placed model, hashed as the game hashes it, in `NAME_lodlights.ymap` and `NAME_distantlights.ymap` |
 | `manifest generate <folder> [-o FILE] [--format pso\|xml]` | a resource's `_manifest.ymf` worked out from its `.ymap` and `.ytyp` files, as CodeWalker's project "Generate manifest" writes it: each map's type-file dependencies, interior flags, each interior's own dependencies and collision entry |
 | `names harvest \| fetch \| info \| lookup <term>...` | the hash-to-name list: build it from the game (`--exe` required), download a public one (`--build N` says what it covers), see where it is and which game build it covers, or hash a name / name a hash |
 | `textures <archive> <file> [-o DIR] [--format png\|jpg\|webp] [--sheet] [--max-size PX] [--dds]` | export a dictionary's textures, or the textures baked into a drawable, as images (alias `ytd`); a loose `.ytd`/`.ydr`/`.ydd`/`.yft` needs no archive |
@@ -593,6 +594,36 @@ map's flags and extents are then worked out the way `resource build` does
 (`--ytyp`, the resource folder's type files, then the game index;
 `--no-recalc` keeps CodeWalker's starting values). The map is named after
 the output file unless `--name` says otherwise.
+
+### Light a map up at distance
+
+```sh
+rage ymap lodlights my_park/stream/                       # writes my_park/stream/my_park_lodlights.ymap and my_park_distantlights.ymap
+rage ymap lodlights my_park/stream/park.ymap -o out/ --name park
+```
+
+A lamp placed in a map only shines while its entity is streamed in; past
+its `lodDist` the game draws the LOD lights instead, and a custom map
+has none until they are generated. `ymap lodlights` does what CodeWalker's
+project window "LOD lights generator" does: it takes every entity of the
+maps given, finds its archetype in the resource's `.ytyp` files (or the
+ones `--ytyp` names, then the game's through the index), its model among
+the resource's `.ydr`, `.ydd` and `.yft` files (or `--models`, then the
+game's), and turns each light of the model into one LOD light, carried
+into the world by its bone and the entity's placement. Each light gets
+the hash the game computes for an entity's lights (from the entity's
+world box and the light's index after the archetype's extensions), so the
+LOD light goes out when the real one comes on. The lights are sorted by
+that hash and written as two maps, as CodeWalker does: `NAME_lodlights`
+(`CLODLight`: directions, falloffs, time flags, cone angles, coronas) and
+its parent `NAME_distantlights` (`CDistantLODLight`: positions and
+colours, category medium), with the flags and extents CodeWalker's
+`CalcFlags` and `CalcExtents` give them. `NAME` is the resource folder's
+name unless `--name` says otherwise, and the maps land beside the input
+unless `-o` says otherwise. Street lights are not told apart (CodeWalker
+leaves that unfinished too), so `numStreetLights` is 0. An entity whose
+archetype or model is found nowhere is named in a warning and skipped; a
+map with no light at all is an error, and nothing is written.
 
 ### Generate a resource's manifest
 

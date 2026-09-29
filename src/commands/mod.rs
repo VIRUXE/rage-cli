@@ -18,3 +18,4 @@ pub mod names;
 pub mod ytyp;
 pub mod manifest;
 pub mod ymap;
+pub mod ymap_lodlights;

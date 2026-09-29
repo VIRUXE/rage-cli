@@ -7,7 +7,7 @@ use anyhow::{bail, Context, Result};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
-use rage_formats::{build_meta, dump_meta, from_xml, rage_joaat, MetaValue, NameTable, Schema};
+use rage_formats::{build_meta, dump_meta, from_xml, rage_joaat, MetaValue, NameTable, Schema, Vec3};
 
 use crate::rpf::GtaKeys;
 
@@ -22,6 +22,10 @@ pub enum YmapCommand {
     /// Make a .ymap from a Menyoo spooner XML: props become entities,
     /// vehicles car generators
     FromMenyoo(FromMenyooArgs),
+    /// Generate the LOD lights of a resource's maps, as CodeWalker's
+    /// project "LOD lights generator" does: every light of every entity's
+    /// model, written as NAME_lodlights.ymap and NAME_distantlights.ymap
+    Lodlights(super::ymap_lodlights::LodlightsArgs),
 }
 
 #[derive(clap::Args)]
@@ -59,6 +63,7 @@ pub struct FromMenyooArgs {
 pub fn run(args: &YmapArgs, keys: Option<&GtaKeys>, exe: Option<&Path>) -> Result<()> {
     match &args.command {
         YmapCommand::FromMenyoo(a) => run_from_menyoo(a, keys, exe),
+        YmapCommand::Lodlights(a) => super::ymap_lodlights::run(a, keys, exe),
     }
 }
 
@@ -292,11 +297,20 @@ fn map_xml(name: &str, placements: &[Placement], lod_dist: Option<f32>, names: &
             counts.attached += 1;
         }
     }
+    (map_document(name, "", 0, 65, None, &entities, &cars), counts)
+}
+
+/// A `CMapData` document in the layout `resource dump` writes, with every
+/// list empty but the `entities` and `carGenerators` given as XML, and
+/// zero extents when `extents` (entities, streaming) is `None`.
+pub(crate) fn map_document(name: &str, parent: &str, flags: u32, content_flags: u32, extents: Option<((Vec3, Vec3), (Vec3, Vec3))>, entities: &str, cars: &str) -> String {
     let name = esc(name);
-    let xml = format!(
-        "<CMapData><name>{name}</name><parent/><flags value=\"0\"/><contentFlags value=\"65\"/>\
-         <streamingExtentsMin x=\"0\" y=\"0\" z=\"0\"/><streamingExtentsMax x=\"0\" y=\"0\" z=\"0\"/>\
-         <entitiesExtentsMin x=\"0\" y=\"0\" z=\"0\"/><entitiesExtentsMax x=\"0\" y=\"0\" z=\"0\"/>\
+    let parent = esc(parent);
+    let ((emin, emax), (smin, smax)) = extents.unwrap_or_default();
+    let xyz = |tag: &str, v: Vec3| format!("<{tag} x=\"{}\" y=\"{}\" z=\"{}\"/>", v.x, v.y, v.z);
+    format!(
+        "<CMapData><name>{name}</name><parent>{parent}</parent><flags value=\"{flags}\"/><contentFlags value=\"{content_flags}\"/>\
+         {}{}{}{}\
          <entities>{entities}</entities>\
          <containerLods itemType=\"rage__fwContainerLodDef\"/><boxOccluders itemType=\"BoxOccluder\"/><occludeModels itemType=\"OccludeModel\"/>\
          <physicsDictionaries/><instancedData><ImapLink/><PropInstanceList itemType=\"rage__fwPropInstanceListDef\"/>\
@@ -305,9 +319,12 @@ fn map_xml(name: &str, placements: &[Placement], lod_dist: Option<f32>, names: &
          <LODLightsSOA><direction/><falloff/><falloffExponent/><timeAndStateFlags/><hash/><coneInnerAngle/><coneOuterAngleOrCapExt/><coronaIntensity/></LODLightsSOA>\
          <DistantLODLightsSOA><position/><RGBI/><numStreetLights value=\"0\"/><category value=\"0\"/></DistantLODLightsSOA>\
          <block><version value=\"0\"/><flags value=\"0\"/><name>{name}</name><exportedBy>rage-cli</exportedBy><owner/><time>{}</time></block></CMapData>",
+        xyz("streamingExtentsMin", smin),
+        xyz("streamingExtentsMax", smax),
+        xyz("entitiesExtentsMin", emin),
+        xyz("entitiesExtentsMax", emax),
         crate::names::today(),
-    );
-    (xml, counts)
+    )
 }
 
 #[cfg(test)]

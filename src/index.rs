@@ -158,6 +158,10 @@ pub struct GameIndex {
     /// `joaat(lowercase stem)` -> the lowercase stem, for every `.ytyp`
     /// `archetype_ytyp` names.
     pub ytyp_names: HashMap<u32, String>,
+    /// `joaat(lowercase stem)` -> where that `.ytyp` lives; later archives
+    /// win. How an archetype's full definition (its extensions, say) is
+    /// read once `archetype_ytyp` has named its file.
+    pub ytyp_by_name: HashMap<u32, EntryLoc>,
 }
 
 const RESIDENT_DICTS: [&str; 2] = ["mapdetail", "vehshare"];
@@ -255,6 +259,7 @@ impl GameIndex {
         self.archetype_asset.extend(later.archetype_asset);
         self.archetype_ytyp.extend(later.archetype_ytyp);
         self.ytyp_names.extend(later.ytyp_names);
+        self.ytyp_by_name.extend(later.ytyp_by_name);
     }
 
     /// Reads the raw bytes of an already-located entry, descending through
@@ -854,6 +859,7 @@ fn index_archive(archive: &Archive, archive_path: &Path, nested_rpfs: &[String],
             let ytyp_hash = rage_joaat(&stem);
             if models {
                 out.index.ytyp_names.insert(ytyp_hash, stem.to_string());
+                out.index.ytyp_by_name.insert(ytyp_hash, loc());
             }
             for a in ytyp.archetypes {
                 if textures && a.texture_dict_hash != 0 {
@@ -935,7 +941,7 @@ const MAGIC: u32 = 0x5850_4652; // "RPFX" little-endian
 // asset bindings.
 // 8: one file per part, each carrying the archives' fingerprint; entries
 // written in key order. 9: archetype LOD distances.
-const FORMAT_VERSION: u32 = 10;
+const FORMAT_VERSION: u32 = 11;
 
 fn write_u32(buf: &mut Vec<u8>, v: u32) {
     buf.extend_from_slice(&v.to_le_bytes());
@@ -1030,6 +1036,7 @@ fn encode_part(index: &GameIndex, part: Parts, fingerprint: u64) -> Vec<u8> {
                 write_u32(&mut buf, hash);
                 write_str(&mut buf, name);
             }
+            write_locs(&mut buf, &index.ytyp_by_name);
         }
         _ => unreachable!("encode_part takes a single part"),
     }
@@ -1177,6 +1184,7 @@ fn decode_part(data: &[u8], part: Parts) -> Result<(u64, GameIndex)> {
                 let hash = c.u32()?;
                 index.ytyp_names.insert(hash, c.string()?);
             }
+            index.ytyp_by_name = read_locs(&mut c)?;
         }
         _ => bail!("index: {} is not a single part", part.0),
     }
@@ -1217,6 +1225,7 @@ mod tests {
         index.archetype_lod_dist.insert(8, 150.0);
         index.archetype_ytyp.insert(8, 14);
         index.ytyp_names.insert(14, "v_minimap".to_string());
+        index.ytyp_by_name.insert(14, loc("v_minimap.ytyp"));
         index
     }
 
@@ -1244,6 +1253,7 @@ mod tests {
         assert_eq!(back.archetype_lod_dist, index.archetype_lod_dist);
         assert_eq!(back.archetype_ytyp, index.archetype_ytyp);
         assert_eq!(back.ytyp_names, index.ytyp_names);
+        assert_eq!(back.ytyp_by_name, index.ytyp_by_name);
     }
 
     #[test]

@@ -8,6 +8,7 @@ mod navmesh;
 mod names;
 mod index;
 mod extents;
+mod lodlights;
 mod keys;
 mod paths;
 mod plot_inputs;
