@@ -1,16 +1,17 @@
 //! Retail drawables and bounds through `resource dump` → `resource build` → `resource dump`,
-//! checked against each other, against `resource info`, and against CodeWalker.Core itself when
-//! `codewalker-cli` is built next to this repo (`../codewalker-cli/bin/Release/codewalker-cli.exe`).
+//! checked against each other, against `resource info`, and against CodeWalker.Core itself.
 //!
 //! Skipped unless `GTAV_PATH` points at the game, since it needs the retail archives and the keys.
+//! With `GTAV_PATH` set it also requires the oracle: `../codewalker-cli/bin/Release/codewalker-cli.exe`
+//! and a CodeWalker.Core built from the source the port follows (`CODEWALKER_CORE_DIR`, or
+//! `../codewalker-cli/core/CodeWalker.Core.dll` from `build-core.ps1`). The installed release DLL is
+//! older than that source (it quantises bound vertices differently) and is never used here.
 //!
 //! The oracle checks, per file:
 //! - CodeWalker's export of the original equals our dump of it (the reader and the dump);
 //! - CodeWalker's export of the rebuilt file equals our dump of it (CodeWalker reads our file as we do);
-//! - with a CodeWalker.Core built from source (`CODEWALKER_CORE_DIR`, or `../codewalker-cli/core/`),
-//!   CodeWalker's own import of our first dump, saved and exported, equals our dump of the rebuilt
-//!   file (our build is CodeWalker's build). The installed release DLL predates the source the port
-//!   follows (it quantises bound vertices differently), so that check needs the source build.
+//! - CodeWalker's own import of our first dump, saved and exported, equals our dump of the rebuilt
+//!   file (our build is CodeWalker's build).
 //!
 //! Both sides are normalised first: whitespace runs collapse, every float goes through the same
 //! shortest round-trip format (CodeWalker falls back to `G9`), and a named `Name`/`FileName` becomes
@@ -83,14 +84,8 @@ fn source_core() -> Option<PathBuf> {
 }
 
 /// `codewalker-cli verify INPUT -o OUT`; returns the XML it wrote.
-fn verify(exe: &Path, core: Option<&Path>, input: &Path, out: &Path) -> String {
-    let mut cmd = Command::new(exe);
-    cmd.args(["verify", s(input), "-o", s(out)]);
-    match core {
-        Some(dir) => cmd.env("CODEWALKER_CORE_DIR", dir),
-        None => cmd.env_remove("CODEWALKER_CORE_DIR"),
-    };
-    run(&mut cmd);
+fn verify(exe: &Path, core: &Path, input: &Path, out: &Path) -> String {
+    run(Command::new(exe).args(["verify", s(input), "-o", s(out)]).env("CODEWALKER_CORE_DIR", core));
     read(out)
 }
 
@@ -249,20 +244,34 @@ fn items_of(inner: &[&str]) -> Vec<String> {
     out
 }
 
+/// One quantum per axis of the geometry whose (rebuilt) lines are `b`: `CalculateQuantum` from its box.
+fn quantum_of(b: &[&str]) -> [f32; 3] {
+    let find = |tag: &str| b.iter().find(|l| l.trim_start().starts_with(tag)).and_then(|l| vec3_attrs(l));
+    let (min, max) = (find("<BoxMin ").unwrap_or([0.0; 3]), find("<BoxMax ").unwrap_or([0.0; 3]));
+    [0, 1, 2].map(|k| (max[k] - min[k]) * 0.5 / 32767.0)
+}
+
+/// `Err` unless every axis of `after` is within one quantum of `before` (the truncating `BoundVertex_s`).
+fn within_quantum(before: [f32; 3], after: [f32; 3], quantum: [f32; 3]) -> Result<(), String> {
+    for k in 0..3 {
+        let tolerance = quantum[k] * 1.01 + before[k].abs() * f32::EPSILON * 4.0;
+        if (before[k] - after[k]).abs() > tolerance {
+            return Err(format!("a vertex moved by {} on axis {k}, more than one quantum ({})", (before[k] - after[k]).abs(), quantum[k]));
+        }
+    }
+    Ok(())
+}
+
 /// `Geometry`: line for line, except that a vertex row may move by up to one quantum per axis
 /// (`CalculateQuantum` from the box, then the truncating `BoundVertex_s`).
 fn same_geometry(a: &[&str], b: &[&str]) -> Result<(), String> {
     if a.len() != b.len() {
         return Err(format!("{} lines before the rebuild, {} after", a.len(), b.len()));
     }
-    let find = |tag: &str| b.iter().find(|l| l.trim_start().starts_with(tag)).and_then(|l| vec3_attrs(l));
-    let (min, max) = (find("<BoxMin ").unwrap_or([0.0; 3]), find("<BoxMax ").unwrap_or([0.0; 3]));
-    let quantum = [0, 1, 2].map(|k| (max[k] - min[k]) * 0.5 / 32767.0);
+    let quantum = quantum_of(b);
     let mut in_vertices = false;
     for (i, (x, y)) in a.iter().zip(b).enumerate() {
-        let differs = |why: &str| Err(format!("its line {}: {why}
-  before `{}`
-  after  `{}`", i + 1, x.trim(), y.trim()));
+        let differs = |why: &str| Err(format!("its line {}: {why}\n  before `{}`\n  after  `{}`", i + 1, x.trim(), y.trim()));
         match x.trim() {
             "<Vertices>" => in_vertices = true,
             "</Vertices>" => in_vertices = false,
@@ -275,45 +284,85 @@ fn same_geometry(a: &[&str], b: &[&str]) -> Result<(), String> {
             return differs("differs outside the vertices");
         }
         let (Some(p), Some(q)) = (row3(x), row3(y)) else { return differs("a vertex row that does not parse") };
-        for k in 0..3 {
-            let tolerance = quantum[k] * 1.01 + p[k].abs() * f32::EPSILON * 4.0;
-            if (p[k] - q[k]).abs() > tolerance {
-                return differs(&format!("a vertex moved by {} on axis {k}, more than one quantum ({})", (p[k] - q[k]).abs(), quantum[k]));
-            }
+        if let Err(why) = within_quantum(p, q, quantum) {
+            return differs(&why);
         }
     }
     Ok(())
 }
 
-/// `GeometryBVH`: `BuildBVH` reorders the polygons, `BuildMaterials` then lists the materials in the
-/// new order and drops unused ones, the box and sphere become the BVH's and the vertices are
-/// requantised against that box. What must hold: the same vertex count, the same polygons by kind,
-/// no material that was not there before, and every other field unchanged.
+/// The `name="value"` pairs of a self-closing element line, in order.
+fn attrs_of(line: &str) -> Vec<(&str, &str)> {
+    let mut out = Vec::new();
+    let mut rest = line.trim();
+    while let Some(eq) = rest.find("=\"") {
+        let name = rest[..eq].rsplit(' ').next().unwrap_or("");
+        let after = &rest[eq + 2..];
+        let Some(end) = after.find('"') else { break };
+        out.push((name, &after[..end]));
+        rest = &after[end + 1..];
+    }
+    out
+}
+
+/// Each polygon as its kind and attributes (vertex indices, flags, radius), with `m` replaced by the
+/// material it names, sorted: the polygons as a multiset, independent of the BVH's node order and of
+/// the material order, but not of a wrong vertex index or material.
+fn polygon_multiset(polygons: &[&str], materials: &[String]) -> Result<Vec<String>, String> {
+    let mut out = Vec::with_capacity(polygons.len());
+    for line in polygons {
+        let mut key = tag_of(line);
+        for (name, value) in attrs_of(line) {
+            let value = if name == "m" {
+                let i: usize = value.parse().map_err(|_| format!("a polygon with material `{value}`"))?;
+                materials.get(i).cloned().ok_or_else(|| format!("a polygon naming material {i} of {}", materials.len()))?
+            } else {
+                value.to_owned()
+            };
+            key.push_str(&format!(" {name}={value}"));
+        }
+        out.push(key);
+    }
+    out.sort();
+    Ok(out)
+}
+
+/// `GeometryBVH`: `BuildBVH` reorders the polygons (never the vertices), `BuildMaterials` then lists the
+/// materials in the new order and drops unused ones, the box and sphere become the BVH's and the
+/// vertices are requantised against that box. What must hold: every vertex, index for index, within
+/// one quantum of the rebuilt box; the same polygons as a multiset, each with the same vertex indices,
+/// flags, radius and material (resolved through its index); no material that was not there before;
+/// and every other field unchanged.
 fn same_bvh_geometry(a: &[&str], b: &[&str]) -> Result<(), String> {
+    let quantum = quantum_of(b);
     let (va, rest_a) = cut(a, "Vertices");
     let (vb, rest_b) = cut(b, "Vertices");
     if va.len() != vb.len() {
         return Err(format!("{} vertices before the rebuild, {} after", va.len(), vb.len()));
     }
+    for (i, (x, y)) in va.iter().zip(&vb).enumerate() {
+        let (Some(p), Some(q)) = (row3(x), row3(y)) else { return Err(format!("vertex {i} does not parse: `{}` / `{}`", x.trim(), y.trim())) };
+        within_quantum(p, q, quantum).map_err(|why| format!("vertex {i}: {why}\n  before `{}`\n  after  `{}`", x.trim(), y.trim()))?;
+    }
     let (pa, rest_a) = cut(&rest_a, "Polygons");
     let (pb, rest_b) = cut(&rest_b, "Polygons");
-    let kinds = |p: &[&str]| { let mut k: Vec<String> = p.iter().map(|l| tag_of(l)).collect(); k.sort(); k };
-    if kinds(&pa) != kinds(&pb) {
-        return Err(format!("{} polygons before the rebuild, {} after, or of other kinds", pa.len(), pb.len()));
-    }
     let (ma, rest_a) = cut(&rest_a, "Materials");
     let (mb, rest_b) = cut(&rest_b, "Materials");
-    let before = items_of(&ma);
-    if let Some(new) = items_of(&mb).into_iter().find(|m| !before.contains(m)) {
+    let (mats_a, mats_b) = (items_of(&ma), items_of(&mb));
+    if let Some(new) = mats_b.iter().find(|m| !mats_a.contains(m)) {
         return Err(format!("a material that was not there before: {new}"));
+    }
+    let (polys_a, polys_b) = (polygon_multiset(&pa, &mats_a)?, polygon_multiset(&pb, &mats_b)?);
+    if polys_a != polys_b {
+        let lost = polys_a.iter().find(|p| !polys_b.contains(p)).map_or("-", String::as_str);
+        let gained = polys_b.iter().find(|p| !polys_a.contains(p)).map_or("-", String::as_str);
+        return Err(format!("{} polygons before the rebuild, {} after; e.g. lost `{lost}`, gained `{gained}`", polys_a.len(), polys_b.len()));
     }
     let derived = ["<BoxMin ", "<BoxMax ", "<BoxCenter ", "<SphereCenter ", "<SphereRadius "];
     let fixed = |r: &[&str]| r.iter().filter(|l| !derived.iter().any(|d| l.trim_start().starts_with(d))).map(|l| l.to_string()).collect::<Vec<_>>();
     let (fa, fb) = (fixed(&rest_a), fixed(&rest_b));
     if let Some((x, y)) = fa.iter().zip(&fb).find(|(x, y)| x != y) {
-        return Err(format!("a field changed
-  before `{}`
-  after  `{}`", x.trim(), y.trim()));
+        return Err(format!("a field changed\n  before `{}`\n  after  `{}`", x.trim(), y.trim()));
     }
     if fa.len() != fb.len() {
         return Err("the fields around the lists changed".to_owned());
@@ -330,9 +379,7 @@ fn same_up_to_codewalker(before: &str, after: &str) -> Result<(), String> {
     let (mut i, mut j) = (0, 0);
     while i < a.len() && j < b.len() {
         if a[i] != b[j] {
-            return Err(format!("line {} differs outside a bound geometry
-  before `{}`
-  after  `{}`", i + 1, a[i].trim(), b[j].trim()));
+            return Err(format!("line {} differs outside a bound geometry\n  before `{}`\n  after  `{}`", i + 1, a[i].trim(), b[j].trim()));
         }
         if let Some(kind) = opens_geometry(a[i]) {
             let (ga, gb) = (element(&a, i), element(&b, j));
@@ -412,7 +459,7 @@ const CASES: &[Case] = &[
 ];
 
 /// Runs one file through the pipeline; `Err` lists every check it failed.
-fn check(case: &Case, original: &Path, work: &Path, oracle: Option<&Path>, core: Option<&Path>) -> Result<String, String> {
+fn check(case: &Case, original: &Path, work: &Path, exe: &Path, core: &Path) -> Result<String, String> {
     let ext = original.extension().unwrap().to_str().unwrap();
     let mut failures = Vec::new();
 
@@ -437,29 +484,22 @@ fn check(case: &Case, original: &Path, work: &Path, oracle: Option<&Path>, core:
         failures.push(format!("`resource info` differs:\n--- original\n{info0}\n--- rebuilt\n{info1}"));
     }
 
-    let mut oracle_note = "no oracle";
-    if let Some(exe) = oracle {
-        let theirs = verify(exe, core, original, &work.join("cw_original.xml"));
-        if let Err(e) = same_normalized(&dump0, &theirs) {
-            failures.push(format!("CodeWalker exports the original differently: {e}"));
-        }
-        let theirs = verify(exe, core, &rebuilt, &work.join("cw_rebuilt.xml"));
-        if let Err(e) = same_normalized(&dump1, &theirs) {
-            failures.push(format!("CodeWalker exports the rebuilt file differently: {e}"));
-        }
-        oracle_note = "CodeWalker reads";
-        if core.is_some() {
-            let theirs = verify(exe, core, &first, &work.join("cw_import.xml"));
-            if let Err(e) = same_normalized(&dump1, &theirs) {
-                failures.push(format!("CodeWalker builds our dump differently: {e}"));
-            }
-            oracle_note = "CodeWalker reads and builds";
-        }
+    let theirs = verify(exe, core, original, &work.join("cw_original.xml"));
+    if let Err(e) = same_normalized(&dump0, &theirs) {
+        failures.push(format!("CodeWalker exports the original differently: {e}"));
+    }
+    let theirs = verify(exe, core, &rebuilt, &work.join("cw_rebuilt.xml"));
+    if let Err(e) = same_normalized(&dump1, &theirs) {
+        failures.push(format!("CodeWalker exports the rebuilt file differently: {e}"));
+    }
+    let theirs = verify(exe, core, &first, &work.join("cw_import.xml"));
+    if let Err(e) = same_normalized(&dump1, &theirs) {
+        failures.push(format!("CodeWalker builds our dump differently: {e}"));
     }
 
     let moved = dump0 != dump1;
     if failures.is_empty() {
-        Ok(format!("{oracle_note} agree{}", if moved { "; bound geometry re-derived by the rebuild, as CodeWalker does" } else { "; dumps identical" }))
+        Ok(format!("CodeWalker reads and builds agree{}", if moved { "; bound geometry re-derived by the rebuild, as CodeWalker does" } else { "; dumps identical" }))
     } else {
         Err(failures.join("\n"))
     }
@@ -471,13 +511,14 @@ fn retail_drawables_and_bounds_round_trip() {
         println!("GTAV_PATH not set; skipping smoke test");
         return;
     };
-    let oracle = oracle();
-    let core = oracle.as_ref().and(source_core());
-    match (&oracle, &core) {
-        (None, _) => println!("codewalker-cli not built; the CodeWalker checks are skipped"),
-        (Some(_), None) => println!("no CodeWalker.Core built from source; the CodeWalker build check is skipped"),
-        (Some(_), Some(dir)) => println!("CodeWalker.Core from {}", dir.display()),
-    }
+    let tool = sibling_tool();
+    let exe = oracle().unwrap_or_else(|| panic!(
+        "GTAV_PATH is set but the oracle is not built: run `dotnet build -c Release` in {}", tool.display()));
+    let core = source_core().unwrap_or_else(|| panic!(
+        "GTAV_PATH is set but no CodeWalker.Core built from source was found: run {} (or set CODEWALKER_CORE_DIR)",
+        tool.join("build-core.ps1").display()));
+    assert!(core.join("CodeWalker.Core.dll").is_file(), "no CodeWalker.Core.dll in {} (CODEWALKER_CORE_DIR)", core.display());
+    println!("CodeWalker.Core from {}", core.display());
 
     let tmp = tempfile::tempdir().expect("failed to make a temp dir");
     let mut failures = Vec::new();
@@ -495,7 +536,7 @@ fn retail_drawables_and_bounds_round_trip() {
         let original = find_file(&files_dir, case.file).unwrap_or_else(|| panic!("{} was not extracted", case.file));
 
         let work = tmp.path().join(format!("case{n}"));
-        match check(case, &original, &work, oracle.as_deref(), core.as_deref()) {
+        match check(case, &original, &work, &exe, &core) {
             Ok(note) => println!("ok   {} ({}): {note}", case.file, case.feature),
             Err(e) => {
                 println!("FAIL {} ({})", case.file, case.feature);
@@ -526,4 +567,21 @@ fn a_rebuilt_geometry_may_move_its_vertices_by_one_quantum() {
     assert!(same_up_to_codewalker(before, &far).is_err());
     let outside = before.replace("<BoxMax x=\"1\"", "<BoxMax x=\"2\"");
     assert!(same_up_to_codewalker(before, &outside).is_err(), "only vertex rows may move");
+}
+
+#[test]
+fn a_rebuilt_bvh_geometry_may_reorder_polygons_but_not_change_them() {
+    let before = "<Bounds type=\"GeometryBVH\">\n  <BoxMin x=\"-1\" y=\"-1\" z=\"-1\" />\n  <BoxMax x=\"1\" y=\"1\" z=\"1\" />\n  <Materials>\n    <Item>\n      <Type value=\"1\" />\n    </Item>\n    <Item>\n      <Type value=\"2\" />\n    </Item>\n  </Materials>\n  <Vertices>\n    0.5, 0.25, 0\n    0, 0, 0\n    1, 0, 0\n  </Vertices>\n  <Polygons>\n    <Triangle m=\"0\" v1=\"0\" v2=\"1\" v3=\"2\" f1=\"0\" f2=\"0\" f3=\"0\" />\n    <Sphere m=\"1\" v=\"1\" radius=\"0.5\" />\n  </Polygons>\n</Bounds>";
+    // polygons and materials swapped around, as BuildBVH and BuildMaterials do
+    let reordered = before
+        .replace("<Type value=\"1\" />", "<Type value=\"X\" />").replace("<Type value=\"2\" />", "<Type value=\"1\" />").replace("<Type value=\"X\" />", "<Type value=\"2\" />")
+        .replace("    <Triangle m=\"0\" v1=\"0\" v2=\"1\" v3=\"2\" f1=\"0\" f2=\"0\" f3=\"0\" />\n    <Sphere m=\"1\" v=\"1\" radius=\"0.5\" />",
+                 "    <Sphere m=\"0\" v=\"1\" radius=\"0.5\" />\n    <Triangle m=\"1\" v1=\"0\" v2=\"1\" v3=\"2\" f1=\"0\" f2=\"0\" f3=\"0\" />");
+    assert!(same_up_to_codewalker(before, &reordered).is_ok(), "{:?}", same_up_to_codewalker(before, &reordered));
+    let wrong_index = before.replace("v3=\"2\"", "v3=\"0\"");
+    assert!(same_up_to_codewalker(before, &wrong_index).is_err(), "a changed vertex index is caught");
+    let wrong_material = before.replace("<Sphere m=\"1\"", "<Sphere m=\"0\"");
+    assert!(same_up_to_codewalker(before, &wrong_material).is_err(), "a polygon's material is caught");
+    let moved = before.replace("    1, 0, 0\n", "    0.9, 0, 0\n");
+    assert!(same_up_to_codewalker(before, &moved).is_err(), "a vertex moved past a quantum is caught");
 }
