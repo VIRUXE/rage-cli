@@ -139,17 +139,26 @@ pub fn sniff_xml(text: &str) -> Option<&'static str> {
 }
 
 /// `resource build` of a `.ydr` or `.ybn` from XML: builds, checks that the file reads back
-/// identically, writes it and reports on stderr.
+/// identically, prints the warnings (an error with `--strict`), writes it and reports on stderr.
 pub fn build(kind: &str, text: &str, args: &BuildArgs) -> Result<()> {
-    let (bytes, summary) = if kind == "ydr" {
+    let built = if kind == "ydr" {
         let dir = args.textures.clone().unwrap_or_else(|| args.file.parent().filter(|p| !p.as_os_str().is_empty()).map_or_else(|| PathBuf::from("."), Path::to_path_buf));
-        let (bytes, _) = build_ydr_from_xml_checked(text, Some(&dir)).with_context(|| format!("'{}'", args.file.display()))?;
-        let summary = drawable_summary(&bytes, &args.file)?;
-        (bytes, summary)
+        build_ydr_from_xml_checked(text, Some(&dir))
     } else {
-        let (bytes, _) = build_ybn_from_xml_checked(text).with_context(|| format!("'{}'", args.file.display()))?;
-        let summary = format!("RSC7 bounds from {}: {}", args.file.display(), read_bound_info(&bytes).context("the written bound cannot be read back")?.label());
-        (bytes, summary)
+        build_ybn_from_xml_checked(text)
+    };
+    let built = built.with_context(|| format!("'{}'", args.file.display()))?;
+    for warning in &built.warnings {
+        eprintln!("warning: {warning}");
+    }
+    if args.strict && !built.warnings.is_empty() {
+        bail!("{} warning(s) (--strict)", built.warnings.len());
+    }
+    let bytes = built.bytes;
+    let summary = if kind == "ydr" {
+        drawable_summary(&bytes, &args.file)?
+    } else {
+        format!("RSC7 bounds from {}: {}", args.file.display(), read_bound_info(&bytes).context("the written bound cannot be read back")?.label())
     };
     if let Some(parent) = args.output.parent().filter(|p| !p.as_os_str().is_empty()) {
         std::fs::create_dir_all(parent).with_context(|| format!("failed to create {}", parent.display()))?;
@@ -165,7 +174,7 @@ fn drawable_summary(bytes: &[u8], from: &Path) -> Result<String> {
     let models = d.models.map(|m| g.get::<DrawableModelsBlock>(m).all_models()).unwrap_or_default();
     let geometries: usize = models.iter().map(|m| g.get::<DrawableModel>(*m).geometries.len()).sum();
     let group = d.shader_group.map(|s| g.get::<ShaderGroup>(s));
-    let shaders = group.map_or(0, |s| s.count);
-    let textures = group.and_then(|s| s.dictionary).map_or(0, |t| g.get::<TextureDictionary>(t).count);
+    let shaders = group.map_or(0, |s| s.count(&g));
+    let textures = group.and_then(|s| s.dictionary).map_or(0, |t| g.get::<TextureDictionary>(t).count(&g));
     Ok(format!("RSC7 drawable from {}: {} models, {geometries} geometries, {shaders} shaders, {textures} textures", from.display(), models.len()))
 }

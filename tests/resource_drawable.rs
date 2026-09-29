@@ -108,3 +108,71 @@ fn info_lists_a_drawables_bound() {
     let (json, _) = ok(&["resource", "info", s(&ydr), "--json"]);
     assert!(json.contains("\"bound\":{\"kind\":\"Box\"}"), "{json}");
 }
+
+/// The triangle fixture with a box bound, built; with `copy` the root's pointer at the first offset is
+/// copied over the one at the second (offsets into the system section).
+fn boxed_triangle(copy: Option<(usize, usize)>) -> Vec<u8> {
+    let xml = XML.replace("</Drawable>", &format!("{BOX_BOUND}</Drawable>"));
+    let file = rage_formats::build_ydr_from_xml(&xml, None).unwrap();
+    let Some((from, to)) = copy else { return file };
+    let (mut sys, gfx) = rage_formats::prepare_rsc7(&file).unwrap();
+    let flags = |at: usize| u32::from_le_bytes(file[at..at + 4].try_into().unwrap());
+    let ptr = sys[from..from + 8].to_vec();
+    sys[to..to + 8].copy_from_slice(&ptr);
+    rage_formats::build_rsc7_with_flags(flags(4), flags(8), &sys, flags(12), &gfx)
+}
+
+#[test]
+fn info_on_a_drawable_whose_pointers_cross_falls_back_to_the_old_parser() {
+    let dir = tempfile::tempdir().unwrap();
+    let good = dir.path().join("good.ydr");
+    std::fs::write(&good, boxed_triangle(None)).unwrap();
+    // the skeleton pointer (0x18) made equal to the shader group pointer (0x10)
+    let bad = dir.path().join("bad.ydr");
+    std::fs::write(&bad, boxed_triangle(Some((0x10, 0x18)))).unwrap();
+    let (out, err) = ok(&["resource", "info", s(&bad)]);
+    assert!(!err.contains("panicked"), "{err}");
+    assert!(out.contains("tri_prop") && out.contains("1 models, 1 geometries"), "{out}");
+    // the old parser's lines, without the block reader's bound line that the good file has
+    let (good_out, _) = ok(&["resource", "info", s(&good)]);
+    assert!(good_out.lines().any(|l| l.contains("bound:") && l.contains("Box")), "{good_out}");
+    let old_lines = |text: &str| -> Vec<String> {
+        text.lines().filter(|l| !l.starts_with("File:") && !l.starts_with("Body:") && !l.contains("bound:")).map(str::to_owned).collect()
+    };
+    assert!(!out.contains("bound:"), "{out}");
+    assert_eq!(old_lines(&out), old_lines(&good_out));
+    let err = fails(&["resource", "dump", s(&bad), "--no-dds"]);
+    assert!(err.contains("already read as ShaderGroup") && !err.contains("panicked"), "{err}");
+}
+
+#[test]
+fn build_warns_of_a_texture_that_is_not_embedded_and_strict_refuses_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let xml = dir.path().join("tri.xml");
+    std::fs::write(&xml, XML).unwrap();
+    let ydr = dir.path().join("tri.ydr");
+    let (_, err) = ok(&["resource", "build", s(&xml), "-o", s(&ydr)]);
+    let warnings: Vec<&str> = err.lines().filter(|l| l.starts_with("warning: ")).collect();
+    assert_eq!(warnings, ["warning: shader 0 parameter DiffuseSampler: texture 'missing_tex' is not embedded (resolved at runtime from the archetype's txd)"], "{err}");
+    assert!(ydr.is_file());
+
+    let strict = dir.path().join("strict.ydr");
+    let err = fails(&["resource", "build", s(&xml), "-o", s(&strict), "--strict"]);
+    assert!(err.contains("missing_tex") && err.contains("1 warning(s) (--strict)"), "{err}");
+    assert!(!strict.exists(), "nothing is written");
+}
+
+#[test]
+fn a_bound_document_does_not_build_a_drawable() {
+    let dir = tempfile::tempdir().unwrap();
+    let xml = dir.path().join("c.xml");
+    std::fs::write(&xml, YBN_XML).unwrap();
+    let ydr = dir.path().join("c.ydr");
+    let err = fails(&["resource", "build", s(&xml), "-o", s(&ydr)]);
+    assert!(err.contains("root element is <BoundsFile>, not <Drawable>"), "{err}");
+    assert!(!ydr.exists());
+    let tri = dir.path().join("tri.xml");
+    std::fs::write(&tri, XML).unwrap();
+    let err = fails(&["resource", "build", s(&tri), "-o", s(&dir.path().join("t.ybn"))]);
+    assert!(err.contains("root element is <Drawable>, not <BoundsFile> or <Bounds>"), "{err}");
+}

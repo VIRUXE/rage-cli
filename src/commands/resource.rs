@@ -80,7 +80,8 @@ pub struct BuildArgs {
     #[arg(long, value_name = "FILE")]
     pub schema: Vec<PathBuf>,
 
-    /// Treat any structure the writer could not fill as an error
+    /// Treat any structure the writer could not fill, or any warning of a
+    /// drawable build (a texture not embedded, a bone without a name), as an error
     #[arg(long)]
     pub strict: bool,
 
