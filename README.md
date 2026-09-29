@@ -3,7 +3,8 @@
 A command-line tool for GTA V game files, written in Rust. It opens RPF
 archives (including the encrypted retail ones, given your own game install),
 finds files across nested archives without extracting them, inspects and
-exports the resources inside, renders models to pictures, and reads and
+exports the resources inside, renders models to pictures, turns maps, models
+and collision into CodeWalker's XML and back into game files, and reads and
 writes navmeshes. No CodeWalker, no GPU, no game running.
 
 ![Heist duffel bag rendered from four angles](docs/images/screenshot-heist-bag-grid.jpg)
@@ -43,7 +44,7 @@ can use on their own.
        | RPF0..RPF8 and IMG  |   | RSC7 resources:      |   | CPU rasteriser,    |
        | archives, NG/AES    |   | ytd ydr ydd yft ymt  |   | contact sheets,    |
        | keys, RPF writer,   |   | ytyp ymap ybn ynv,   |   | bitmap font,       |
-       | DLC load order      |   | RSC7 writer          |   | wasm glTF export   |
+       | DLC load order      |   | read, write, XML     |   | wasm glTF export   |
        +---------------------+   +----------+-----------+   +--------------------+
                                             ^                        |
                                             +------------------------+
@@ -103,7 +104,10 @@ FiveM resource archives usually are not.
 deflated body split into a system section and a graphics section, with
 pointers between blocks. Textures (`.ytd`), models (`.ydr`, `.ydd`, `.yft`),
 metadata (`.ytyp`, `.ymap`, `.ymt`), collision (`.ybn`) and navmeshes
-(`.ynv`) are all RSC7. `resource info` shows the header and what a file holds.
+(`.ynv`) are all RSC7. `resource info` shows the header and what a file holds;
+`resource dump` writes a map, a model or a collision file out as the XML
+CodeWalker (and Sollumz) use, and `resource build` makes the game file again
+from that XML, edited or not.
 
 **Metadata.** Map data is self-describing: a `.ymap`, `.ytyp` or `.ymt`
 carries the layout of its own structures inside the RSC7 body, and a
@@ -1025,7 +1029,8 @@ src/
   commands/          one file per command; parse arguments, call the libraries, print
     navmesh.rs       the navmesh subcommands (cell lookup, OBJ/PNG output, build wiring)
     plot.rs          `plot`: placement, MLO-vs-world-space meshes, room-box estimation, exterior entities, the caption
-    resource.rs      `resource info`/`dump`: container detection, per-format summaries, XML/JSON dumps
+    resource.rs      `resource info`/`dump`/`build`/`recalc`: container detection, per-format summaries, XML/JSON dumps, Meta/PSO rebuilds
+    resource_drawable.rs  the drawable and bound side of `resource`: `.ydr`/`.ybn` dump to CodeWalker's XML, checked build, `info` extras
     names.rs         `names`: harvesting the game's names, lookups
     ymap.rs          `ymap from-menyoo`: a map from a Menyoo spooner XML, CodeWalker's import
     manifest.rs      `manifest generate`: a _manifest.ymf from a folder's maps and type files, CodeWalker's layout
