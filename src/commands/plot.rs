@@ -1,6 +1,6 @@
 //! `rage plot`: a readable top-down plan of an interior — rooms, portals,
-//! props, collision, drawable shells and navmesh — drawn from whatever files
-//! it is given. Parsing lives in rage-formats, drawing in rage-render; this
+//! props, collision, drawable shells, navmesh and path nodes — drawn from
+//! whatever files it is given. Parsing lives in rage-formats, drawing in rage-render; this
 //! command only decides what belongs on the page.
 
 use std::path::{Path, PathBuf};
@@ -9,7 +9,8 @@ use anyhow::{bail, Context, Result};
 use rage_formats::{encode_image, rage_joaat, ImageFormat, MloDef, MloInstance, MloRoom, Vec3, YmapEntity};
 use rage_render::{
     plan_png, plan_svg, quad_footprint, rooms_stacked, scene_bounds, EntityMark, Layer, Marker, NavClass, NavShape,
-    PlanOptions, PlanReport, PortalShape, RoomShape, Scene, Tri, FLOOR_BAND,
+    PathLinkKind, PathLinkShape, PathNodeKind, PathNodeMark, PlanOptions, PlanReport, PortalShape, RoomShape, Scene,
+    Tri, FLOOR_BAND,
 };
 
 use crate::plot_inputs::{self, Explicit, Mesh, PlotSources, SkipReason};
@@ -33,6 +34,8 @@ pub enum LayerArg {
     Drawable,
     /// Navmesh polygons: where the game lets pedestrians walk
     Navmesh,
+    /// Path nodes and links from .ynd: where the game drives vehicles and walks peds
+    Paths,
 }
 
 impl From<LayerArg> for Layer {
@@ -44,13 +47,14 @@ impl From<LayerArg> for Layer {
             LayerArg::Collision => Layer::Collision,
             LayerArg::Drawable => Layer::Drawable,
             LayerArg::Navmesh => Layer::Navmesh,
+            LayerArg::Paths => Layer::Paths,
         }
     }
 }
 
 #[derive(clap::Args)]
 pub struct PlotArgs {
-    /// Files (.ynv .ybn .ymap .ytyp .ydr .ydd), FiveM resource folders
+    /// Files (.ynv .ynd .ybn .ymap .ytyp .ydr .ydd), FiveM resource folders
     /// (scanned recursively), or vanilla MLO archetype names / 0x hashes
     /// (resolved through the game index)
     #[arg(required = true, num_args = 1..)]
@@ -79,7 +83,7 @@ pub struct PlotArgs {
     pub ydr: Vec<PathBuf>,
 
     /// Layers to draw (comma separated)
-    #[arg(long, value_delimiter = ',', default_value = "rooms,portals,entities,collision,drawable,navmesh")]
+    #[arg(long, value_delimiter = ',', default_value = "rooms,portals,entities,collision,drawable,navmesh,paths")]
     pub layers: Vec<LayerArg>,
 
     /// Draw one storey: geometry from Z-0.3 to Z+2.0 m
@@ -246,6 +250,7 @@ fn summary(report: &PlanReport) -> String {
                 Layer::Collision => "collision tris",
                 Layer::Drawable => "drawable tris",
                 Layer::Navmesh => "navmesh polys",
+                Layer::Paths => "path nodes",
             };
             format!("{n} {noun}")
         })
@@ -617,13 +622,45 @@ fn build_scene(
         }
     }
 
+    // Path nodes are world-space, like navmesh cells. A link's far end is
+    // looked up across every cell loaded; one into a cell that was not given
+    // has nowhere to go and is left out.
+    let node_at = |area: u16, id: u16| -> Option<&rage_formats::PathNode> {
+        sources.ynds.iter().find_map(|(_, y)| y.node(id).filter(|n| rage_formats::ynd_same_cell(n.area_id as u32, area as u32)))
+    };
+    let mut dangling_links = 0usize;
+    for (_, ynd) in &sources.ynds {
+        for node in &ynd.nodes {
+            let kind = if node.is_disabled() { PathNodeKind::Disabled }
+                else if node.is_ped_node() { PathNodeKind::Ped }
+                else { PathNodeKind::Vehicle };
+            scene.path_nodes.push(PathNodeMark { position: node.position, kind, junction: node.is_junction() });
+            for link in &node.links {
+                let Some(to) = node_at(link.area_id, link.node_id) else { dangling_links += 1; continue };
+                // The order CodeWalker's `YndLink.GetColour` decides in.
+                let kind = if link.shortcut() { PathLinkKind::Shortcut }
+                    else if node.is_disabled() || to.is_disabled() { PathLinkKind::Disabled }
+                    else if node.is_ped_node() || to.is_ped_node() { PathLinkKind::Ped }
+                    else if node.off_road() || to.off_road() { PathLinkKind::OffRoad }
+                    else if link.dont_use_for_navigation() { PathLinkKind::NoNavigation }
+                    else { PathLinkKind::Road };
+                let lanes = link.lane_count_forward() + link.lane_count_backward();
+                scene.path_links.push(PathLinkShape { from: node.position, to: to.position, kind, lanes });
+            }
+        }
+    }
+    if dangling_links > 0 {
+        eprintln!("{dangling_links} path links lead into cells that were not given; not drawn");
+    }
+
     scene.markers = markers;
 
     // Only geometry stored in the interior's own space needs a .ymap to say
-    // where it is; a navmesh cell on its own is already in world coordinates.
+    // where it is; a navmesh or path cell on its own is already in world
+    // coordinates.
     let needs_placing = !scene.rooms.is_empty() || !scene.portals.is_empty() || interior_marks > 0 || placed_meshes > 0;
-    if !sources.ynvs.is_empty() && placement.entity.is_none() && needs_placing {
-        eprintln!("warning: navmesh polygons are in world coordinates but the rest of the plan is in the interior's own; pass the .ymap that places it");
+    if (!sources.ynvs.is_empty() || !sources.ynds.is_empty()) && placement.entity.is_none() && needs_placing {
+        eprintln!("warning: navmesh polygons and path nodes are in world coordinates but the rest of the plan is in the interior's own; pass the .ymap that places it");
     }
 
     let band = match z_band {

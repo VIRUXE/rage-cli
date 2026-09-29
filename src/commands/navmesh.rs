@@ -10,8 +10,8 @@ use rage_formats::{
 };
 
 use crate::navmesh::{build, BuildOptions, Footprint};
-use crate::resources::{load_resource_bytes, load_triangles, mlo_placement};
-use crate::rpf::{Archive, GtaKeys};
+use crate::resources::{find_in_game, load_resource_bytes, load_triangles, mlo_placement};
+use crate::rpf::GtaKeys;
 use crate::utils::{parse_pair, parse_quad, walkdir};
 
 #[derive(clap::Args)]
@@ -229,7 +229,7 @@ fn run_cell(args: &CellArgs, keys: Option<&GtaKeys>, exe: Option<&Path>) -> Resu
     let exe_path = crate::keys::resolve_exe(exe)?;
     let game_root = exe_path.parent().context("--exe has no parent directory")?;
 
-    let (from, data) = find_in_game(game_root, &name, keys)?
+    let (from, data) = find_in_game(game_root, &name, "nav", keys)?
         .with_context(|| format!("{name} not found in any archive under {}", game_root.display()))?;
     let output = args.output.clone().unwrap_or_else(|| PathBuf::from(&name));
     std::fs::write(&output, &data).with_context(|| format!("writing {}", output.display()))?;
@@ -237,50 +237,6 @@ fn run_cell(args: &CellArgs, keys: Option<&GtaKeys>, exe: Option<&Path>) -> Resu
     println!("Wrote {}", output.display());
     let ynv = parse_ynv(&data)?;
     print!("{}", describe(&ynv));
-    Ok(())
-}
-
-/// Finds `name` (by stem hash) across the game's archives in load order —
-/// base, update.rpf, then DLC packs — descending only into nested archives
-/// that look like navmesh packs; the last hit wins, as in the game.
-fn find_in_game(game_root: &Path, name: &str, keys: Option<&GtaKeys>) -> Result<Option<(String, Vec<u8>)>> {
-    let stem = name.rsplit_once('.').map_or(name, |(s, _)| s).to_lowercase();
-    let hash = rage_joaat(&stem);
-    let mut found = None;
-    for archive_path in crate::index::ranked_archives(game_root, keys)? {
-        let archive = match Archive::open(&archive_path, keys) {
-            Ok(a) => a,
-            Err(_) => continue,
-        };
-        if archive.require_keys(keys).is_err() { continue; }
-        let label = archive_path.display().to_string();
-        find_in_archive(&archive, &label, hash, keys, 0, &mut |hit| found = Some(hit))?;
-    }
-    Ok(found)
-}
-
-fn find_in_archive(
-    archive: &Archive, label: &str, hash: u32, keys: Option<&GtaKeys>, depth: usize,
-    on_hit: &mut dyn FnMut((String, Vec<u8>)),
-) -> Result<()> {
-    if depth > 4 { return Ok(()); }
-    let files: Vec<_> = archive.list_files().into_iter().cloned().collect();
-    for file in files {
-        let lower = file.name.to_lowercase();
-        if lower.ends_with(".rpf") {
-            if !lower.contains("nav") { continue; }
-            if let Ok(nested) = archive.open_nested(&file, keys) {
-                find_in_archive(&nested, &format!("{label}:{}", file.path), hash, keys, depth + 1, on_hit)?;
-            }
-            continue;
-        }
-        if !lower.ends_with(".ynv") { continue; }
-        let stem = lower.rsplit_once('.').map_or(lower.as_str(), |(s, _)| s);
-        if rage_joaat(stem) == hash {
-            let data = archive.extract(&file, keys)?;
-            on_hit((format!("{label}:{}", file.path), data));
-        }
-    }
     Ok(())
 }
 

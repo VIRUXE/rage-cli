@@ -5,7 +5,7 @@ use anyhow::{Context, Result};
 use std::fs;
 use std::path::Path;
 
-use rage_formats::{parse_drawables, parse_yft, parse_ytd, Drawable, DrawableEntry, DrawableKind, Fragment,
+use rage_formats::{parse_drawables, parse_yft, parse_ytd, rage_joaat, Drawable, DrawableEntry, DrawableKind, Fragment,
                    YtdTexture};
 use rpf_archive::RpfEntryKind;
 
@@ -43,6 +43,54 @@ pub fn load_resource_bytes(file: &str, archive: Option<&Path>, keys: Option<&Gta
             load_resource(&archive, file, keys)
         }
     }
+}
+
+/// Finds `name` (by stem hash) across the game's archives in load order —
+/// base, update.rpf, then DLC packs — descending only into nested archives
+/// whose name contains `nested` (`nav` for navmesh packs, `paths` for path
+/// node packs); the last hit wins, as in the game. Returns where it was
+/// found and its bytes.
+pub fn find_in_game(game_root: &Path, name: &str, nested: &str, keys: Option<&GtaKeys>) -> Result<Option<(String, Vec<u8>)>> {
+    let (stem, ext) = name.rsplit_once('.').map_or((name, ""), |(s, e)| (s, e));
+    let hash = rage_joaat(&stem.to_lowercase());
+    let ext = format!(".{}", ext.to_lowercase());
+    let mut found = None;
+    for archive_path in crate::index::ranked_archives(game_root, keys)? {
+        let archive = match Archive::open(&archive_path, keys) {
+            Ok(a) => a,
+            Err(_) => continue,
+        };
+        if archive.require_keys(keys).is_err() { continue; }
+        let label = archive_path.display().to_string();
+        find_in_archive(&archive, &label, hash, &ext, nested, keys, 0, &mut |hit| found = Some(hit))?;
+    }
+    Ok(found)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn find_in_archive(
+    archive: &Archive, label: &str, hash: u32, ext: &str, nested: &str, keys: Option<&GtaKeys>, depth: usize,
+    on_hit: &mut dyn FnMut((String, Vec<u8>)),
+) -> Result<()> {
+    if depth > 4 { return Ok(()); }
+    let files: Vec<_> = archive.list_files().into_iter().cloned().collect();
+    for file in files {
+        let lower = file.name.to_lowercase();
+        if lower.ends_with(".rpf") {
+            if !lower.contains(nested) { continue; }
+            if let Ok(inner) = archive.open_nested(&file, keys) {
+                find_in_archive(&inner, &format!("{label}:{}", file.path), hash, ext, nested, keys, depth + 1, on_hit)?;
+            }
+            continue;
+        }
+        if !lower.ends_with(ext) { continue; }
+        let stem = lower.rsplit_once('.').map_or(lower.as_str(), |(s, _)| s);
+        if rage_joaat(stem) == hash {
+            let data = archive.extract(&file, keys)?;
+            on_hit((format!("{label}:{}", file.path), data));
+        }
+    }
+    Ok(())
 }
 
 /// The extension of a (possibly archive-relative) name, without the dot;

@@ -105,6 +105,7 @@ pub fn kind_of_name(name: &str) -> Option<&'static str> {
     match Path::new(name).extension().and_then(|e| e.to_str()).map(str::to_lowercase).as_deref() {
         Some("ydr") => Some("ydr"),
         Some("ybn") => Some("ybn"),
+        Some("ynd") => Some("ynd"),
         _ => None,
     }
 }
@@ -117,6 +118,9 @@ pub fn dump(kind: &str, data: &[u8], names: &NameTable, output: Option<&Path>, n
     }
     if kind == "ybn" {
         return dump_ybn_xml(data);
+    }
+    if kind == "ynd" {
+        return rage_formats::dump_ynd_xml(data, names);
     }
     let dir = if no_dds {
         None
@@ -134,6 +138,7 @@ pub fn sniff_xml(text: &str) -> Option<&'static str> {
     match doc.root_element().tag_name().name() {
         "Drawable" => Some("ydr"),
         "BoundsFile" | "Bounds" => Some("ybn"),
+        "NodeDictionary" => Some("ynd"),
         _ => None,
     }
 }
@@ -144,6 +149,8 @@ pub fn build(kind: &str, text: &str, args: &BuildArgs) -> Result<()> {
     let built = if kind == "ydr" {
         let dir = args.textures.clone().unwrap_or_else(|| args.file.parent().filter(|p| !p.as_os_str().is_empty()).map_or_else(|| PathBuf::from("."), Path::to_path_buf));
         build_ydr_from_xml_checked(text, Some(&dir))
+    } else if kind == "ynd" {
+        build_ynd_checked(text)
     } else {
         build_ybn_from_xml_checked(text)
     };
@@ -157,6 +164,9 @@ pub fn build(kind: &str, text: &str, args: &BuildArgs) -> Result<()> {
     let bytes = built.bytes;
     let summary = if kind == "ydr" {
         drawable_summary(&bytes, &args.file)?
+    } else if kind == "ynd" {
+        let ynd = rage_formats::parse_ynd(&bytes).context("the written path nodes cannot be read back")?;
+        format!("RSC7 path nodes from {}: {} nodes, {} links, {} junctions", args.file.display(), ynd.nodes.len(), ynd.nodes.iter().map(|n| n.links.len()).sum::<usize>(), ynd.junctions.len())
     } else {
         format!("RSC7 bounds from {}: {}", args.file.display(), read_bound_info(&bytes).context("the written bound cannot be read back")?.label())
     };
@@ -166,6 +176,20 @@ pub fn build(kind: &str, text: &str, args: &BuildArgs) -> Result<()> {
     std::fs::write(&args.output, &bytes).with_context(|| format!("writing {}", args.output.display()))?;
     eprintln!("Wrote {} ({} bytes, {})", args.output.display(), bytes.len(), summary);
     Ok(())
+}
+
+/// `XmlYnd.GetYnd` then a write, read back and compared as XML: a file that does not read back
+/// identically is an error, never handed over.
+fn build_ynd_checked(text: &str) -> Result<rage_formats::Built> {
+    let ynd = rage_formats::ynd_from_xml(text)?;
+    let bytes = rage_formats::serialize_ynd(&ynd)?;
+    let names = NameTable::core();
+    let expected = rage_formats::ynd_to_xml(&ynd, &names);
+    let back = rage_formats::dump_ynd_xml(&bytes, &names).context("the written file cannot be read back")?;
+    if expected != back {
+        bail!("the written file does not read back identically");
+    }
+    Ok(rage_formats::Built { bytes, xml: expected, warnings: Vec::new() })
 }
 
 fn drawable_summary(bytes: &[u8], from: &Path) -> Result<String> {

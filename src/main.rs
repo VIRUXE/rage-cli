@@ -16,14 +16,14 @@ mod resources;
 mod update;
 mod utils;
 
-use commands::{info, list, extract, verify, tree, textures, screenshot, create, search, resource, index_cmd, navmesh as navmesh_cmd, plot, names as names_cmd, ytyp, ymap, manifest};
+use commands::{info, list, extract, verify, tree, textures, screenshot, create, search, resource, index_cmd, navmesh as navmesh_cmd, paths as paths_cmd, plot, names as names_cmd, ytyp, ymap, manifest};
 use commands::update as update_cmd;
 use rpf::GtaKeys;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
 #[command(name = "rage")]
-#[command(about = "A CLI for RAGE game files: RPF archives, RSC7 resources, textures, renders and navmeshes", long_about = None)]
+#[command(about = "A CLI for RAGE game files: RPF archives, RSC7 resources, textures, renders, navmeshes and path nodes", long_about = None)]
 struct Cli {
     /// Enable verbose output
     #[arg(short, long, global = true)]
@@ -134,7 +134,10 @@ enum Commands {
     /// Inspect, fetch, export and build navmesh cells (.ynv)
     Navmesh(navmesh_cmd::NavmeshArgs),
 
-    /// Draw a top-down plan of an interior: rooms, portals, props, collision, drawables and navmesh to PNG or SVG
+    /// Inspect, fetch, export and rewrite path node cells (.ynd)
+    Paths(paths_cmd::PathsArgs),
+
+    /// Draw a top-down plan of an interior: rooms, portals, props, collision, drawables, navmesh and paths to PNG or SVG
     Plot(plot::PlotArgs),
 
     /// Check for a newer release, or update this binary in place
@@ -219,6 +222,7 @@ fn dispatch(command: Commands, keys: Option<&GtaKeys>, exe: Option<&Path>, verbo
         Commands::Screenshot(args)                           => screenshot::run(&args, keys, exe),
         Commands::Resource(args)                             => resource::run(&args, keys, exe, verbose),
         Commands::Navmesh(args)                              => navmesh_cmd::run(&args, keys, exe),
+        Commands::Paths(args)                                => paths_cmd::run(&args, keys, exe),
         Commands::Plot(args)                                 => plot::run(&args, keys, exe),
         Commands::Update(args)                               => update_cmd::run(&args),
         Commands::Index(args)                                => index_cmd::run(&args, keys, exe),

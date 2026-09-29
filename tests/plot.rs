@@ -291,3 +291,33 @@ fn exterior_entities_are_marks_without_models() {
     assert!(out.contains("0 drawable tris"), "{out}");
     assert!(png.is_file());
 }
+
+/// A `.ynd` cell plots on its own: its nodes frame the page, the links are
+/// lines, and the legend and the stdout line count the nodes.
+#[test]
+fn plots_path_nodes() {
+    use rage_formats::{serialize_ynd, PathLink, Ynd};
+    let dir = tempfile::tempdir().unwrap();
+    let mut ynd = Ynd::new();
+    ynd.add_node(489, Vec3::new(-3500.0, -400.0, 20.0)).links.push(PathLink::to(489, 1));
+    ynd.add_node(489, Vec3::new(-3480.0, -390.0, 20.0)).links.push(PathLink::to(489, 0));
+    ynd.add_node(489, Vec3::new(-3470.0, -390.0, 20.0)).links.push(PathLink::to(490, 0));
+    ynd.vehicle_node_count = 3;
+    let path = write(dir.path(), "nodes489.ynd", &serialize_ynd(&ynd).unwrap());
+
+    let svg = dir.path().join("paths.svg");
+    let out = rage(&["plot", &path, "--scale", "10", "-o", svg.to_str().unwrap()]);
+    assert!(out.status.success(), "stderr:\n{}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("3 path nodes"), "{stdout}");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("1 path links lead into cells that were not given"), "{err}");
+    let text = std::fs::read_to_string(&svg).unwrap();
+    assert!(text.contains("<line"), "links are lines in the SVG");
+    assert!(text.contains("paths 3"), "no paths legend row in the SVG");
+
+    // Only the paths layer, to a PNG: the 30 by 10 m span frames the page.
+    let png = dir.path().join("paths.png");
+    let out = ok(&["plot", &path, "--layers", "paths", "--scale", "10", "-o", png.to_str().unwrap()]);
+    assert!(out.contains("region -3502.0,-402.0..-3468.0,-388.0"), "{out}");
+}

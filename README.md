@@ -5,7 +5,7 @@ archives (including the encrypted retail ones, given your own game install),
 finds files across nested archives without extracting them, inspects and
 exports the resources inside, renders models to pictures, turns maps, models
 and collision into CodeWalker's XML and back into game files, and reads and
-writes navmeshes. No CodeWalker, no GPU, no game running.
+writes navmeshes and path nodes. No CodeWalker, no GPU, no game running.
 
 ![Heist duffel bag rendered from four angles](docs/images/screenshot-heist-bag-grid.jpg)
 
@@ -43,7 +43,7 @@ can use on their own.
        | rpf-archive         |   | rage-formats         |   | rage-render        |
        | RPF0..RPF8 and IMG  |   | RSC7 resources:      |   | CPU rasteriser,    |
        | archives, NG/AES    |   | ytd ydr ydd yft ymt  |   | contact sheets,    |
-       | keys, RPF writer,   |   | ytyp ymap ybn ynv,   |   | bitmap font,       |
+       | keys, RPF writer,   |   | ytyp ymap ybn ynv ynd|   | bitmap font,       |
        | DLC load order      |   | read, write, XML     |   | wasm glTF export   |
        +---------------------+   +----------+-----------+   +--------------------+
                                             ^                        |
@@ -103,9 +103,10 @@ FiveM resource archives usually are not.
 **Resources.** Most files inside are RSC7 resources: a 16-byte header, then a
 deflated body split into a system section and a graphics section, with
 pointers between blocks. Textures (`.ytd`), models (`.ydr`, `.ydd`, `.yft`),
-metadata (`.ytyp`, `.ymap`, `.ymt`), collision (`.ybn`) and navmeshes
-(`.ynv`) are all RSC7. `resource info` shows the header and what a file holds;
-`resource dump` writes a map, a model or a collision file out as the XML
+metadata (`.ytyp`, `.ymap`, `.ymt`), collision (`.ybn`), navmeshes (`.ynv`)
+and path nodes (`.ynd`) are all RSC7. `resource info` shows the header and
+what a file holds; `resource dump` writes a map, a model, a collision or a
+path node file out as the XML
 CodeWalker (and Sollumz) use, and `resource build` makes the game file again
 from that XML, edited or not.
 
@@ -144,6 +145,15 @@ have no navmesh of their own: their polygons live inside the cell, flagged
 interior. A custom interior (MLO) ships none, so NPCs inside it walk on the
 polygons of whatever stood there before.
 
+**Path nodes.** Traffic and wandering pedestrians follow `.ynd` files, one
+per 512 m grid cell, named `nodes<N>.ynd` with N = y × 32 + x over a 32×32
+grid from (-8192, -8192). A cell holds nodes (position, street, five flag
+bytes: junction, highway, tunnel, disabled, speed, special type), the links
+leaving each node (lane counts each way, shortcut, length) and the
+heightmaps of its junctions. `update.rpf` overrides most of the base game's
+cells; Cayo Perico's cells carry 1024 added to N and stream in over the sea
+cells they replace.
+
 **Escrow.** FiveM asset escrow encrypts some stream files (`FXAP` header).
 Those cannot be read by anything but the client; every command says so
 rather than guessing.
@@ -171,12 +181,12 @@ debug logging, `--no-update-check` to skip the daily release check.
 
 | Command | Does |
 |---|---|
-| `resource info <file> [--archive RPF] [--json] [--limit N] [--names FILE]...` | header plus a summary: every texture of a `.ytd`; bounds, LODs, geometry and shaders of a drawable; name, flags, extents and entity table of a `.ymap`; archetypes and interiors of a `.ytyp`; dependencies of a `_manifest.ymf` (PSO, RBF or XML); a `.ydr` also its skeleton bones, lights and collision bound |
+| `resource info <file> [--archive RPF] [--json] [--limit N] [--names FILE]...` | header plus a summary: every texture of a `.ytd`; bounds, LODs, geometry and shaders of a drawable; name, flags, extents and entity table of a `.ymap`; archetypes and interiors of a `.ytyp`; dependencies of a `_manifest.ymf` (PSO, RBF or XML); a `.ydr` also its skeleton bones, lights and collision bound; nodes, links, junctions, streets and adjacent cells of a `.ynd` |
 | `resource dump <file> [--archive RPF] [--json] [-o FILE] [--names FILE]...` | any Meta or PSO file (`.ymap` `.ytyp` `.ymt` `.ymf` `.pso`) as XML in CodeWalker's layout, or as JSON |
-| `resource dump <file.ydr\|file.ybn> [--archive RPF] [-o FILE] [--no-dds]` | a drawable or a collision bound as CodeWalker's XML (`<Drawable>` / `<BoundsFile>`), its embedded textures saved as `.dds` beside `-o` (or in the current folder) unless `--no-dds`; XML only, no `--json` |
+| `resource dump <file.ydr\|file.ybn\|file.ynd> [--archive RPF] [-o FILE] [--no-dds]` | a drawable, a collision bound or a path node cell as CodeWalker's XML (`<Drawable>` / `<BoundsFile>` / `<NodeDictionary>`), its embedded textures saved as `.dds` beside `-o` (or in the current folder) unless `--no-dds`; XML only, no `--json` |
 | `resource rename <file> <name> [--from NAME] [-o FILE] [--dry-run]` | change a name inside a file in place: a `.ymap`'s own name (the default), or any hash field or XML value equal to `--from`, in Meta, PSO and XML files |
 | `resource build <file.xml\|file.json> -o FILE [--format meta\|pso] [--schema FILE]... [--strict] [--no-recalc] [--ytyp PATH]...` | the inverse of `dump`: a `.ymap`/`.ytyp`/`.ymt` (RSC7 Meta) or `_manifest.ymf`/`.pso` (PSO) from the XML or JSON, using CodeWalker's structure tables, or those of the original file with `--schema` |
-| `resource build <file.xml> -o FILE.ydr\|FILE.ybn [--textures DIR] [--strict]` | the inverse of the drawable/bound `dump`: a `.ydr` (version 165) or `.ybn` (version 43) from CodeWalker's XML, textures read from `DIR` (default: the XML's folder); the written file is read back and must dump identically, or nothing is written; a texture that is not embedded or a bone without a name is a warning, an error with `--strict` |
+| `resource build <file.xml> -o FILE.ydr\|FILE.ybn\|FILE.ynd [--textures DIR] [--strict]` | the inverse of the drawable/bound/path `dump`: a `.ydr` (version 165), `.ybn` (version 43) or `.ynd` (version 1) from CodeWalker's XML, textures read from `DIR` (default: the XML's folder); the written file is read back and must dump identically, or nothing is written; a texture that is not embedded or a bone without a name is a warning, an error with `--strict` |
 | `resource recalc <ymap\|folder>... [--ytyp PATH]... [--dry-run] [--json]` | fix `.ymap` flags, `contentFlags` and extents in place, as `build` works them out; a folder is searched for every `.ymap`, and a file is rewritten only when something changed |
 | `ytyp from-drawables <file\|dir>... -o FILE.ytyp [--txd NAME] [--lod-dist N] [--hd-dist N] [--flags N] [--merge FILE]` | a type file declaring an archetype for every `.ydr`, `.ydd` entry and `.yft`, with the bounds read from the model, as CodeWalker's "New Archetype from YDR" does; `--merge` adds to an existing `.ytyp` |
 | `ymap from-menyoo <file.xml> -o FILE.ymap [--name NAME] [--lod-dist N] [--ytyp PATH]... [--no-recalc]` | a map from a Menyoo spooner XML, as CodeWalker's "Import Menyoo XML" makes it: props become entities, vehicles car generators, peds are left out; flags and extents worked out as `resource build` does |
@@ -191,7 +201,7 @@ debug logging, `--no-update-check` to skip the daily release check.
 | Command | Does |
 |---|---|
 | `screenshot <archive> <file> [--views ...] [--grid] [--ytd NAME]... [--paint #rrggbb] [--background ...] [--size WxH] [--lod ...] [--entry ...]` | render a `.ydr`/`.ydd`/`.yft` from up to six fixed angles, textures resolved from the file, `--ytd` and the index |
-| `plot <input>... [--ymap\|--ytyp\|--ybn\|--ydr FILE]... [--layers ...] [--floor-z Z\|--z-range LO,HI] [--region ...] [--scale PX] [--marker x,y,label]... [--labels] [--props N\|--no-props] [--title T] [--quality Q] -o FILE` | a top-down plan of an interior — rooms, portals, props, collision, drawable shell and navmesh — or of an exterior map, its entities drawn with their models — as PNG, JPG, WebP or SVG |
+| `plot <input>... [--ymap\|--ytyp\|--ybn\|--ydr FILE]... [--layers ...] [--floor-z Z\|--z-range LO,HI] [--region ...] [--scale PX] [--marker x,y,label]... [--labels] [--props N\|--no-props] [--title T] [--quality Q] -o FILE` | a top-down plan of an interior — rooms, portals, props, collision, drawable shell, navmesh and path nodes — or of an exterior map, its entities drawn with their models — as PNG, JPG, WebP or SVG |
 
 ### Navmeshes
 
@@ -203,6 +213,15 @@ debug logging, `--no-update-check` to skip the daily release check.
 | `navmesh ybn-obj <ybn> [--ymap FILE] -o OBJ` | a collision file's triangles as OBJ, placed in the world by the ymap's MLO instance |
 | `navmesh build <cell> --ybn FILE... --clip x0,y0,x1,y1 --floor-z Z -o FILE [...]` | generate interior polygons from collision and append them to the cell; see [Building a navmesh for an interior](#building-a-navmesh-for-an-interior) |
 | `navmesh rewrite <ynv> -o FILE` | parse and write back unchanged; checks the writer against the game |
+
+### Paths
+
+| Command | Does |
+|---|---|
+| `paths info <file> [--archive RPF] [--names FILE]...` | cell, nodes by kind and flag, links inside and out of the cell, junctions, special types, streets, adjacent cells |
+| `paths cell --at X,Y \| --index CX,CY \| --area N [-o FILE]` | pull a cell out of the game, from the archive that loads last |
+| `paths export <ynd> -o OBJ` | nodes as points and links as lines, grouped by kind (road, ped, off-road, shortcut, disabled); junction heightmaps as meshes |
+| `paths rewrite <ynd> -o FILE` | parse and write back unchanged; checks the writer against the game |
 
 ### Maintenance
 
@@ -759,6 +778,20 @@ marks only, for a quick look at a big chunk. The page frames the entities;
 vanilla chunks like `cs1_11.ymap` cover kilometres, so pair them with
 `--region`.
 
+The same corner of the map with its path nodes: `paths cell` fetches the
+cell the game would load, and `plot` draws it (any `.ynd` on the command
+line or in a folder joins the plan, in world space like a navmesh cell).
+Roads are blue, pedestrian crossings magenta, nodes the game has disabled
+red, shortcuts dashed grey; junction nodes get a ring, and a link's width
+grows with its lane count.
+
+```sh
+rage paths cell --at=-250,6400 -o nodes911.ynd
+rage plot nodes911.ynd --layers paths --scale 2 -o paleto-paths.png
+```
+
+![Paleto Bay's road network from nodes911.ynd](docs/images/plot-paths-paleto.png)
+
 ### Plot an interior
 
 An MLO is a custom interior: one archetype standing in for a room layout,
@@ -800,7 +833,7 @@ rage plot v_bahama -o plan.png
 
 ![Bahama Mamas drawn from the game files by archetype name](docs/images/plot-bahama.jpg)
 
-`--layers rooms,portals,entities,collision,drawable,navmesh` picks what gets
+`--layers rooms,portals,entities,collision,drawable,navmesh,paths` picks what gets
 drawn (the default is all of them); dropping `collision,drawable` on a big
 interior is the quickest way to a readable page. A resource that stacks
 several storeys in one MLO draws as an unreadable pile of overlapping rooms

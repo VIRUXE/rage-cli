@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 use rage_formats::{
-    is_fxap, parse_ybn, parse_ydd, parse_ydr, parse_ymap_entities, parse_ymap_mlo_instances, parse_ynv, parse_ytyp,
-    rage_joaat, Drawable, MloInstance, Vec3, Ybn, YmapEntity, Ynv, Ytyp,
+    is_fxap, parse_ybn, parse_ydd, parse_ydr, parse_ymap_entities, parse_ymap_mlo_instances, parse_ynd, parse_ynv,
+    parse_ytyp, rage_joaat, Drawable, MloInstance, Vec3, Ybn, YmapEntity, Ynd, Ynv, Ytyp,
 };
 
 use crate::index::{GameIndex, Parts};
@@ -45,6 +45,7 @@ pub struct PlotSources {
     /// What the plan is of: the first input's file or folder name.
     pub label: String,
     pub ynvs: Vec<(String, Ynv)>,
+    pub ynds: Vec<(String, Ynd)>,
     pub ybns: Vec<Mesh<Ybn>>,
     /// A `.ydr` contributes one drawable, a `.ydd` its whole dictionary.
     pub drawables: Vec<Mesh<Vec<Drawable>>>,
@@ -148,7 +149,7 @@ fn looks_like_a_path(input: &str) -> bool {
         return true;
     }
     let ext = input.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase());
-    matches!(ext.as_deref(), Some("ynv" | "ybn" | "ymap" | "ytyp" | "ydr" | "ydd"))
+    matches!(ext.as_deref(), Some("ynv" | "ynd" | "ybn" | "ymap" | "ytyp" | "ydr" | "ydd"))
 }
 
 /// The path as the filesystem knows it, so the same file reached two ways is
@@ -211,9 +212,9 @@ fn remember_name(path: &Path, src: &mut PlotSources) {
 /// read, so no file joins the plan twice.
 fn add_file(path: &Path, strict: bool, explicit: bool, seen: &mut HashSet<PathBuf>, src: &mut PlotSources) -> Result<()> {
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
-    if !matches!(ext.as_str(), "ynv" | "ybn" | "ymap" | "ytyp" | "ydr" | "ydd") {
+    if !matches!(ext.as_str(), "ynv" | "ynd" | "ybn" | "ymap" | "ytyp" | "ydr" | "ydd") {
         if strict {
-            eprintln!("{}: not a file `plot` can draw (.ynv .ybn .ymap .ytyp .ydr .ydd); ignored", name_of(path));
+            eprintln!("{}: not a file `plot` can draw (.ynv .ynd .ybn .ymap .ytyp .ydr .ydd); ignored", name_of(path));
         }
         return Ok(());
     }
@@ -242,6 +243,7 @@ fn add_file(path: &Path, strict: bool, explicit: bool, seen: &mut HashSet<PathBu
     let parsed = (|| -> Result<()> {
         match ext.as_str() {
             "ynv" => src.ynvs.push((name.clone(), parse_ynv(&data)?)),
+            "ynd" => src.ynds.push((name.clone(), parse_ynd(&data)?)),
             "ybn" => src.ybns.push(Mesh { name: name.clone(), explicit, data: parse_ybn(&data)? }),
             "ytyp" => src.ytyps.push((name.clone(), parse_ytyp(&data)?)),
             "ymap" => {

@@ -28,13 +28,13 @@ pub struct ResourceArgs {
 
 #[derive(clap::Subcommand)]
 pub enum ResourceCommand {
-    /// Print the header and a summary of a .ydr/.ydd/.yft/.ytd/.ymap/.ytyp/.ymf
+    /// Print the header and a summary of a .ydr/.ydd/.yft/.ytd/.ybn/.ynd/.ymap/.ytyp/.ymf
     Info(InfoArgs),
-    /// Write a Meta or PSO file (.ymap .ytyp .ymt .ymf .pso) out as XML or JSON; a .ydr or .ybn as XML (textures as .dds)
+    /// Write a Meta or PSO file (.ymap .ytyp .ymt .ymf .pso) out as XML or JSON; a .ydr, .ybn or .ynd as XML (textures as .dds)
     Dump(DumpArgs),
     /// Change a name inside a .ymap (its own name), a .ymf or any Meta/PSO/XML file, in place
     Rename(RenameArgs),
-    /// Build a .ymap/.ytyp/.ymt, a _manifest.ymf/.pso, a .ydr or a .ybn from XML or JSON written by `dump`
+    /// Build a .ymap/.ytyp/.ymt, a _manifest.ymf/.pso, a .ydr, a .ybn or a .ynd from XML or JSON written by `dump`
     Build(BuildArgs),
     /// Fix the flags and extents of .ymap files in place (a file, or every .ymap in a folder)
     Recalc(RecalcArgs),
@@ -70,8 +70,8 @@ pub struct BuildArgs {
     #[arg(short, long, value_name = "FILE")]
     pub output: PathBuf,
 
-    /// meta (RSC7 .ymap/.ytyp/.ymt), pso (.ymf/.pso), ydr or ybn; default: by the output extension
-    #[arg(long, value_name = "meta|pso|ydr|ybn")]
+    /// meta (RSC7 .ymap/.ytyp/.ymt), pso (.ymf/.pso), ydr, ybn or ynd; default: by the output extension
+    #[arg(long, value_name = "meta|pso|ydr|ybn|ynd")]
     pub format: Option<String>,
 
     /// Binary Meta/PSO files whose structure definitions take precedence
@@ -268,6 +268,8 @@ pub enum Contents {
     Drawables(Vec<DrawableEntry>, Option<drawable::DrawableExtras>),
     /// A `.ybn`: its root bound.
     Bounds(drawable::BoundInfo),
+    /// A `.ynd`: the cell's nodes, links and junctions.
+    Paths(rage_formats::Ynd),
     Map(Ymap),
     Types(Ytyp),
     Manifest(Manifest),
@@ -301,6 +303,7 @@ fn parse_contents(name: &str, data: &[u8], container: &Container) -> Result<Cont
                 return Ok(Contents::Bounds(info));
             }
             match ext.as_str() {
+                "ynd" => Ok(Contents::Paths(rage_formats::parse_ynd(data).context("failed to parse path nodes")?)),
                 "ymap" => Ok(Contents::Map(parse_ymap(data).context("failed to parse map")?)),
                 "ytyp" => Ok(Contents::Types(parse_ytyp(data).context("failed to parse type file")?)),
                 "ymf" => parse_ymf(data).map(|(_, m)| Contents::Manifest(m)).context("failed to parse manifest"),
@@ -443,8 +446,9 @@ fn run_build(args: &BuildArgs, keys: Option<&GtaKeys>, exe: Option<&Path>) -> Re
     let drawable_kind = match args.format.as_deref().map(str::to_lowercase).as_deref() {
         Some("ydr") => Some("ydr"),
         Some("ybn") => Some("ybn"),
+        Some("ynd") => Some("ynd"),
         Some(_) => None,
-        None if matches!(out_ext.as_str(), "ydr" | "ybn") => drawable::kind_of_name(&args.output.to_string_lossy()),
+        None if matches!(out_ext.as_str(), "ydr" | "ybn" | "ynd") => drawable::kind_of_name(&args.output.to_string_lossy()),
         None if matches!(out_ext.as_str(), "ymf" | "pso" | "ymap" | "ytyp" | "ymt") => None,
         None => drawable::sniff_xml(&text),
     };
@@ -460,7 +464,7 @@ fn run_build(args: &BuildArgs, keys: Option<&GtaKeys>, exe: Option<&Path>) -> Re
     let format = match args.format.as_deref().map(str::to_lowercase).as_deref() {
         Some("meta") => "meta",
         Some("pso") => "pso",
-        Some(other) => bail!("--format {other}: expected meta or pso (or ydr, ybn for a drawable or bound)"),
+        Some(other) => bail!("--format {other}: expected meta or pso (or ydr, ybn, ynd for a drawable, bound or path nodes)"),
         None if matches!(out_ext.as_str(), "ymf" | "pso") => "pso",
         None if matches!(out_ext.as_str(), "ymap" | "ytyp" | "ymt") => "meta",
         None => bail!("cannot tell the container from '.{out_ext}'; write a .ymap/.ytyp/.ymt or .ymf/.pso, or pass --format"),
@@ -1018,6 +1022,7 @@ fn write_text(out: &mut String, args: &InfoArgs, container: &Container, contents
             }
         }
         Contents::Bounds(info) => writeln!(out, "Bounds:    {}", info.label()).unwrap(),
+        Contents::Paths(ynd) => out.push_str(&crate::commands::paths::describe(ynd, rage_formats::ynd_area_id_from_file_name(&args.file), names)),
         Contents::Map(ymap) => write_map(out, ymap, names, checks, args.limit),
         Contents::Types(ytyp) => write_types(out, ytyp, names, args.limit),
         Contents::Manifest(manifest) => write_manifest(out, manifest, names, checks),
@@ -1274,6 +1279,7 @@ fn write_json(out: &mut String, args: &InfoArgs, container: &Container, contents
             let items: Vec<String> = entries.iter().map(|e| json_drawable(e, extras.as_ref(), verbose)).collect();
             ("drawables", format!(",\"drawables\":[{}]", items.join(",")))
         }
+        Contents::Paths(ynd) => ("paths", format!(",\"paths\":{}", crate::commands::paths::json_summary(ynd, rage_formats::ynd_area_id_from_file_name(&args.file)).dump())),
         Contents::Map(ymap) => ("map", format!(",\"map\":{}", json_map(ymap, names, checks).dump())),
         Contents::Types(ytyp) => ("types", format!(",\"types\":{}", json_types(ytyp, names).dump())),
         Contents::Manifest(m) => ("manifest", format!(",\"manifest\":{}", json_manifest(m, names, checks).dump())),

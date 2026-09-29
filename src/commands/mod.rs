@@ -12,6 +12,7 @@ pub mod resource_drawable;
 pub mod update;
 pub mod index_cmd;
 pub mod navmesh;
+pub mod paths;
 pub mod plot;
 pub mod names;
 pub mod ytyp;
