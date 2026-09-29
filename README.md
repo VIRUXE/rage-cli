@@ -172,7 +172,7 @@ debug logging, `--no-update-check` to skip the daily release check.
 | `resource dump <file.ydr\|file.ybn> [--archive RPF] [-o FILE] [--no-dds]` | a drawable or a collision bound as CodeWalker's XML (`<Drawable>` / `<BoundsFile>`), its embedded textures saved as `.dds` beside `-o` (or in the current folder) unless `--no-dds`; XML only, no `--json` |
 | `resource rename <file> <name> [--from NAME] [-o FILE] [--dry-run]` | change a name inside a file in place: a `.ymap`'s own name (the default), or any hash field or XML value equal to `--from`, in Meta, PSO and XML files |
 | `resource build <file.xml\|file.json> -o FILE [--format meta\|pso] [--schema FILE]... [--strict] [--no-recalc] [--ytyp PATH]...` | the inverse of `dump`: a `.ymap`/`.ytyp`/`.ymt` (RSC7 Meta) or `_manifest.ymf`/`.pso` (PSO) from the XML or JSON, using CodeWalker's structure tables, or those of the original file with `--schema` |
-| `resource build <file.xml> -o FILE.ydr\|FILE.ybn [--textures DIR]` | the inverse of the drawable/bound `dump`: a `.ydr` (version 165) or `.ybn` (version 43) from CodeWalker's XML, textures read from `DIR` (default: the XML's folder); the written file is read back and must dump identically, or nothing is written |
+| `resource build <file.xml> -o FILE.ydr\|FILE.ybn [--textures DIR] [--strict]` | the inverse of the drawable/bound `dump`: a `.ydr` (version 165) or `.ybn` (version 43) from CodeWalker's XML, textures read from `DIR` (default: the XML's folder); the written file is read back and must dump identically, or nothing is written; a texture that is not embedded or a bone without a name is a warning, an error with `--strict` |
 | `resource recalc <ymap\|folder>... [--ytyp PATH]... [--dry-run] [--json]` | fix `.ymap` flags, `contentFlags` and extents in place, as `build` works them out; a folder is searched for every `.ymap`, and a file is rewritten only when something changed |
 | `ytyp from-drawables <file\|dir>... -o FILE.ytyp [--txd NAME] [--lod-dist N] [--hd-dist N] [--flags N] [--merge FILE]` | a type file declaring an archetype for every `.ydr`, `.ydd` entry and `.yft`, with the bounds read from the model, as CodeWalker's "New Archetype from YDR" does; `--merge` adds to an existing `.ytyp` |
 | `ymap from-menyoo <file.xml> -o FILE.ymap [--name NAME] [--lod-dist N] [--ytyp PATH]... [--no-recalc]` | a map from a Menyoo spooner XML, as CodeWalker's "Import Menyoo XML" makes it: props become entities, vehicles car generators, peds are left out; flags and extents worked out as `resource build` does |
@@ -508,6 +508,26 @@ rage resource build collision.xml -o collision.ybn
 
 `resource info` on a `.ydr` also lists its skeleton (bone count), lights and
 collision bound.
+
+`build` warns of what CodeWalker accepts silently but the game may not: a
+shader parameter naming a texture that is not embedded (the game then looks
+it up in the archetype's texture dictionary) and a bone without a name.
+`--strict` turns the warnings into an error, and nothing is written. Where
+CodeWalker guesses, `build` stops with an error instead: an unknown bound
+type, a vertex row shorter than its layout, a `CompositeTransform` that is not
+16 numbers, a composite inside a composite, a `<DrawableModelsX>` list next to
+a LOD list, a count too big for the file (65536 vertices in a geometry), or an
+XML whose root does not match the output (`<Drawable>` for a `.ydr`,
+`<BoundsFile>` or `<Bounds>` for a `.ybn`).
+
+A dump→build cycle is not bit-exact for collision, exactly as CodeWalker's own
+import is not: a build may move a bound's vertices by up to one quantum per
+axis, and the drift can add up over repeated cycles; a `GeometryBVH`'s polygons
+come back in the order its rebuilt BVH gives them. The read-back check
+compares XML with no texture folder, so texture pixels are outside it. `dump`
+names each `.dds` after its texture with path separators and `: * ? " < > |`
+replaced by `_`, so a texture name never writes outside the folder. A corrupt
+file is an error for `dump`; `info` then prints what the older parser reads.
 
 ### Declare archetypes for new models
 

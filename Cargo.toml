@@ -8,6 +8,7 @@ license = "Unlicense"
 repository = "https://github.com/VIRUXE/rage-cli"
 keywords = ["gta", "rage", "rpf", "gta5", "modding"]
 categories = ["command-line-utilities", "compression", "parsing"]
+exclude = ["docs/superpowers/**", ".superpowers/**"]
 
 [[bin]]
 name = "rage"
