@@ -204,7 +204,7 @@ debug logging, `--no-update-check` to skip the daily release check.
 | `screenshot <archive> <file> [--views ...] [--grid] [--ytd NAME]... [--paint #rrggbb] [--background ...] [--size WxH] [--lod ...] [--entry ...]` | render a `.ydr`/`.ydd`/`.yft` from up to six fixed angles, textures resolved from the file, `--ytd` and the index |
 | `screenshot --vehicle NAME [--hi] [--livery N] [--colour-from carcols[:C]]` (also with `<archive> <file>`) | a vehicle by name through the index: its high-detail model, one of its liveries, its paint from carcols and carvariations |
 | `screenshot --ped NAME [--component SLOT=D[:T[:A]]]...` | a ped composed from its variation info: the 12 component slots' default drawables and textures, or the ones named |
-| `plot [<input>...] [--game --region x0,y0,x1,y1 [--detail D] [--max-lod LEVEL] [--hour H] [--weather W]] [--ymap|--ytyp|--ybn|--ydr FILE]... [--layers ...] [--floor-z Z|--z-range LO,HI] [--region ...] [--scale PX] [--marker x,y,label]... [--labels] [--props N|--no-props] [--title T] [--quality Q] -o FILE` | a top-down plan of an interior — rooms, portals, props, collision, drawable shell, navmesh and path nodes — of an exterior map, its entities drawn with their models — or, with `--game`, of a box of the vanilla map: every chunk the game streams there, LOD-filtered, with water and height contours — as PNG, JPG, WebP or SVG ||--ytyp\|--ybn\|--ydr FILE]... [--layers ...] [--floor-z Z\|--z-range LO,HI] [--region ...] [--scale PX] [--marker x,y,label]... [--labels] [--props N\|--no-props] [--title T] [--quality Q] -o FILE` | a top-down plan of an interior — rooms, portals, props, collision, drawable shell, navmesh and path nodes — or of an exterior map, its entities drawn with their models — as PNG, JPG, WebP or SVG |
+| `plot [<input>...] [--game --region x0,y0,x1,y1 [--detail D] [--max-lod LEVEL] [--hour H] [--weather W]] [--ymap|--ytyp|--ybn|--ydr FILE]... [--layers ...] [--floor-z Z|--z-range LO,HI] [--region ...] [--scale PX] [--marker x,y,label]... [--labels] [--props N|--no-props] [--title T] [--quality Q] -o FILE` | a top-down plan of an interior — rooms, portals, props, collision, drawable shell, navmesh and path nodes — of an exterior map, its entities drawn with their models — or, with `--game`, of a box of the vanilla map: every chunk the game streams there, LOD-filtered, with water and height contours — as PNG, JPG, WebP or SVG |
 
 ### Navmeshes
 
@@ -951,8 +951,9 @@ rage plot v_bahama -o plan.png
 
 ![Bahama Mamas drawn from the game files by archetype name](docs/images/plot-bahama.jpg)
 
-`--layers rooms,portals,entities,collision,drawable,navmesh,paths` picks what gets
-drawn (the default is all of them); dropping `collision,drawable` on a big
+`--layers rooms,portals,entities,collision,drawable,navmesh,paths,water,terrain`
+picks what gets drawn (the default is the first seven; `water` and `terrain`
+only have something to show with `--game`); dropping `collision,drawable` on a big
 interior is the quickest way to a readable page. A resource that stacks
 several storeys in one MLO draws as an unreadable pile of overlapping rooms
 by default; `plot` warns about it on stderr and names the rooms involved, and
@@ -1149,7 +1150,7 @@ per part, and each command loads only the part it uses:
 A missing part is built on first use. A part written for other archives,
 after a game update or a mod, is rebuilt on the next use without being asked.
 Archives are memory-mapped and read in parallel, so a build reads only the
-tables of contents, the `.ytyp` files and a few small ones. Which maps place
+tables of contents, the `.ytyp` files, the manifests and a few small ones. Which maps place
 an interior comes from the game's own world cache (`cache_y.dat`), so only
 the maps it names as placing one, and the script-loaded maps it does not
 describe, are opened: about 1,300 of 19,000. `--no-index` skips the index
