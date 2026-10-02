@@ -1,6 +1,6 @@
 [package]
 name = "rage-cli"
-version = "0.24.0"
+version = "0.25.0"
 edition = "2024"
 authors = ["VIRUXE"]
 description = "Swiss-army CLI for RAGE game files: RPF archives, RSC7 resources, textures, renders and navmeshes"
@@ -41,11 +41,6 @@ fastembed = { version = "7", optional = true, default-features = false, features
 [dev-dependencies]
 tempfile = "3.10"
 rage-formats = { version = "0.5.0", features = ["test-support"] }
-
-# The sibling checkouts while rage-formats 0.5 / rage-render 0.5 are unpublished
-[patch.crates-io]
-rage-formats = { path = "../rage-formats" }
-rage-render = { path = "../rage-render" }
 
 # Cross-compilation targets
 [target.'cfg(windows)'.dependencies]
