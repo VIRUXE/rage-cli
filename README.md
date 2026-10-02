@@ -1098,7 +1098,7 @@ once is enough.
 
 ### The game index
 
-The index lives under `~/.rage-cli/index/<game build>/` in five files, one
+The index lives under `~/.rage-cli/index/<game build>/` in six files, one
 per part, and each command loads only the part it uses:
 
 | Part | Holds | Used by |
@@ -1108,6 +1108,7 @@ per part, and each command loads only the part it uses:
 | `models.bin` | model files by name, each archetype's box, model file and `.ytyp` | `plot` props, `navmesh build --game-props`, `resource build` extents, `manifest generate`, `screenshot --vehicle`/`--hi` |
 | `peds.bin` | every ped `peds.ymt`/`peds.meta` lists, and where each one's `.ymt`, `.ydd`, `.ytd`, `.yft` and streamed component files are | `screenshot --ped` |
 | `vehicles.bin` | every vehicle `vehicles.meta` lists, carcols' colour list and mod kits, each model's carvariations colour combinations and liveries | `screenshot --vehicle`, `--livery`, `--colour-from` |
+| `world.bin` | every map node of the `cache_y.dat` files (parent, flags, extents), `.ymap`, `.ynv` and `.ynd` files by name, the caches' collision bounds, the manifests' timed and weather-gated map groups, where the heightmap and water files are | `plot --game` |
 
 A missing part is built on first use. A part written for other archives,
 after a game update or a mod, is rebuilt on the next use without being asked.

@@ -22,7 +22,10 @@ use std::collections::{HashMap, HashSet};
 use std::io::{IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 
-use rage_formats::{parse_cache_dat, parse_txd_relationships, parse_ymap_entities, parse_ytd, parse_ytyp, rage_joaat, Vec3};
+use rage_formats::{
+    parse_cache_dat, parse_txd_relationships, parse_ymap_entities, parse_ymf, parse_ytd, parse_ytyp, rage_joaat, BoundsStoreItem,
+    MapDataNode, Vec3,
+};
 use rpf_archive::{parse_dlc_list, parse_dlc_setup_order};
 
 use crate::commands::search::collect_archives;
@@ -57,7 +60,10 @@ impl Parts {
     pub const PEDS: Parts = Parts(8);
     /// `vehicle_init`, `car_colors`, `car_variations`, `car_kits`.
     pub const VEHICLES: Parts = Parts(16);
-    pub const ALL: Parts = Parts(31);
+    /// `map_nodes`, `ymap_by_name`, `ynv_by_name`, `ynd_by_name`,
+    /// `bounds_store`, `map_hours`, `map_weathers`, `world_files`.
+    pub const WORLD: Parts = Parts(32);
+    pub const ALL: Parts = Parts(63);
 
     pub fn contains(self, other: Parts) -> bool {
         other.0 != 0 && self.0 & other.0 == other.0
@@ -69,7 +75,9 @@ impl Parts {
 
     /// Each single part in `self`, in a fixed order.
     pub fn each(self) -> impl Iterator<Item = Parts> {
-        [Parts::TEXTURES, Parts::INTERIORS, Parts::MODELS, Parts::PEDS, Parts::VEHICLES].into_iter().filter(move |p| self.contains(*p))
+        [Parts::TEXTURES, Parts::INTERIORS, Parts::MODELS, Parts::PEDS, Parts::VEHICLES, Parts::WORLD]
+            .into_iter()
+            .filter(move |p| self.contains(*p))
     }
 
     pub fn name(self) -> &'static str {
@@ -79,6 +87,7 @@ impl Parts {
             Parts::MODELS => "models",
             Parts::PEDS => "peds",
             Parts::VEHICLES => "vehicles",
+            Parts::WORLD => "world",
             _ => "index",
         }
     }
@@ -188,6 +197,30 @@ pub struct GameIndex {
     pub car_variations: HashMap<u32, VariationEntry>,
     /// Mod kit name hash -> the kit, from every carcols file; later wins.
     pub car_kits: HashMap<u32, KitEntry>,
+    /// Map name hash -> what the world cache (`cache_y.dat`) records of it:
+    /// parent, flags and extents. Only maps that exist as a `.ymap`, the
+    /// last cache in load order winning (`Space.InitCacheData`).
+    pub map_nodes: HashMap<u32, MapDataNode>,
+    /// `joaat(lowercase stem)` of every `.ymap` -> where it lives; later
+    /// archives win (`GameFileCache.YmapDict`).
+    pub ymap_by_name: HashMap<u32, EntryLoc>,
+    /// `joaat(lowercase stem)` of every `.ynv` navmesh cell -> where.
+    pub ynv_by_name: HashMap<u32, EntryLoc>,
+    /// `joaat(lowercase stem)` of every `.ynd` path cell -> where.
+    pub ynd_by_name: HashMap<u32, EntryLoc>,
+    /// `.ybn` name hash -> its box and layer from the caches' bounds store;
+    /// later caches win.
+    pub bounds_store: HashMap<u32, BoundsStoreItem>,
+    /// Map data group name hash -> the hours it is on (bit `h` for hour
+    /// `h`), from every manifest's `MapDataGroups` (`Space.ymaptimes`).
+    pub map_hours: HashMap<u32, u32>,
+    /// Map data group name hash -> the weather types it needs
+    /// (`Space.ymapweathertypes`).
+    pub map_weathers: HashMap<u32, Vec<u32>>,
+    /// `joaat(lowercase file name)` -> where the world files under
+    /// `levels/gta5` live: `heightmap.dat`, `heightmapheistisland.dat`,
+    /// `water.xml`, `water_heistisland.xml`; later archives win.
+    pub world_files: HashMap<u32, EntryLoc>,
 }
 
 /// What the index keeps of a `peds.ymt`/`peds.meta` entry.
@@ -311,6 +344,10 @@ struct Partial {
     covered: HashSet<u32>,
     /// `(interior archetype, placing map)` from the `cache_y.dat`s.
     proxies: Vec<(u32, u32)>,
+    /// Every map node of every `cache_y.dat`, in scan order (world part).
+    nodes: Vec<MapDataNode>,
+    /// Every bounds store item of every `cache_y.dat`, in scan order.
+    bounds: Vec<BoundsStoreItem>,
 }
 
 impl GameIndex {
@@ -353,14 +390,29 @@ impl GameIndex {
         // `collect` keeps `archives`' order, so this replays a serial scan.
         let mut index = GameIndex::default();
         let (mut ymaps, mut covered, mut proxies) = (Vec::new(), HashSet::new(), Vec::new());
+        let (mut nodes, mut bounds) = (Vec::new(), Vec::new());
         for part in partials {
             index.merge(part.index);
             ymaps.extend(part.ymaps);
             covered.extend(part.covered);
             proxies.extend(part.proxies);
+            nodes.extend(part.nodes);
+            bounds.extend(part.bounds);
         }
         if parts.contains(Parts::INTERIORS) {
             index.mlo_instances = interior_placements(&ymaps, &covered, &proxies, keys);
+        }
+        if parts.contains(Parts::WORLD) {
+            // `Space.InitCacheData`: a node whose map is not in `YmapDict`
+            // is skipped; later caches replace earlier ones by name.
+            for node in nodes {
+                if index.ymap_by_name.contains_key(&node.name) {
+                    index.map_nodes.insert(node.name, node);
+                }
+            }
+            for item in bounds {
+                index.bounds_store.insert(item.name, item);
+            }
         }
         if parts.contains(Parts::PEDS) {
             // Only a `.ymt` whose name `peds.ymt`/`peds.meta` lists is a
@@ -405,6 +457,14 @@ impl GameIndex {
         }
         self.car_variations.extend(later.car_variations);
         self.car_kits.extend(later.car_kits);
+        self.map_nodes.extend(later.map_nodes);
+        self.ymap_by_name.extend(later.ymap_by_name);
+        self.ynv_by_name.extend(later.ynv_by_name);
+        self.ynd_by_name.extend(later.ynd_by_name);
+        self.bounds_store.extend(later.bounds_store);
+        self.map_hours.extend(later.map_hours);
+        self.map_weathers.extend(later.map_weathers);
+        self.world_files.extend(later.world_files);
     }
 
     /// Reads the raw bytes of an already-located entry, descending through
@@ -559,6 +619,13 @@ impl GameIndex {
         }
         if self.parts.contains(Parts::VEHICLES) {
             out.push(format!("{} vehicles, {} paints, {} variations, {} kits", s.vehicles, s.car_colors, s.car_variations, s.car_kits));
+        }
+        if self.parts.contains(Parts::WORLD) {
+            out.push(format!(
+                "{} map nodes of {} maps, {} navmesh cells, {} path cells, {} collision bounds, {} timed maps, {} world files",
+                self.map_nodes.len(), self.ymap_by_name.len(), self.ynv_by_name.len(), self.ynd_by_name.len(),
+                self.bounds_store.len(), self.map_hours.len(), self.world_files.len()
+            ));
         }
         out.join(", ")
     }
@@ -948,6 +1015,7 @@ fn index_archive(archive: &Archive, archive_path: &Path, nested_rpfs: &[String],
     let models = parts.contains(Parts::MODELS);
     let peds = parts.contains(Parts::PEDS);
     let vehicles = parts.contains(Parts::VEHICLES);
+    let world = parts.contains(Parts::WORLD);
 
     // A ped's files sit together in one archive: `<ped>.ymt` beside
     // `<ped>.ydd/.ytd/.yft`, or with a `<ped>/` folder of per-component
@@ -1024,15 +1092,30 @@ fn index_archive(archive: &Archive, archive_path: &Path, nested_rpfs: &[String],
 
         if name_lower.ends_with("cache_y.dat") {
             // CodeWalker's own test (`GameFileCache.cs`: `EndsWith("cache_y.dat")`).
-            if interiors {
+            if interiors || world {
                 match archive.extract(file, keys).and_then(|data| parse_cache_dat(&data)) {
                     Ok(cache) => {
-                        out.covered.extend(cache.map_nodes.iter().map(|n| n.name));
-                        out.proxies.extend(cache.interior_proxies.iter().map(|p| (p.name, p.parent)));
+                        if interiors {
+                            out.covered.extend(cache.map_nodes.iter().map(|n| n.name));
+                            out.proxies.extend(cache.interior_proxies.iter().map(|p| (p.name, p.parent)));
+                        }
+                        if world {
+                            out.nodes.extend(cache.map_nodes);
+                            out.bounds.extend(cache.bounds);
+                        }
                     }
                     Err(err) => log::debug!("index: failed to read '{}': {err}", file.path),
                 }
             }
+            continue;
+        }
+
+        if world && WORLD_FILES.contains(&name_lower.as_str()) && under_levels_gta5(&file.path) {
+            out.index.world_files.insert(rage_joaat(&name_lower), EntryLoc {
+                top_archive: archive_path.to_path_buf(),
+                nested_rpfs: nested_rpfs.to_vec(),
+                inner_path: file.path.clone(),
+            });
             continue;
         }
 
@@ -1113,10 +1196,26 @@ fn index_archive(archive: &Archive, archive_path: &Path, nested_rpfs: &[String],
                     folder_files.push((rage_joaat(&folder), rage_joaat(&stem), loc()));
                 }
             }
-        } else if name_lower.ends_with(".ymap") && interiors {
-            // Where it is, for now: whether it is read at all is decided
-            // once every cache_y.dat is in (`interior_placements`).
-            out.ymaps.push((rage_joaat(&stem), loc()));
+        } else if name_lower.ends_with(".ymap") {
+            if interiors {
+                // Where it is, for now: whether it is read at all is decided
+                // once every cache_y.dat is in (`interior_placements`).
+                out.ymaps.push((rage_joaat(&stem), loc()));
+            }
+            if world {
+                out.index.ymap_by_name.insert(rage_joaat(&stem), loc());
+            }
+        } else if name_lower.ends_with(".ynv") && world {
+            out.index.ynv_by_name.insert(rage_joaat(&stem), loc());
+        } else if name_lower.ends_with(".ynd") && world {
+            out.index.ynd_by_name.insert(rage_joaat(&stem), loc());
+        } else if name_lower.ends_with(".ymf") && world {
+            // `Space.InitCacheData`: a manifest's map data groups say which
+            // hours and weathers a map is streamed in.
+            match archive.extract(file, keys).and_then(|data| parse_ymf(&data).map_err(Into::into)) {
+                Ok((_, manifest)) => record_map_groups(&mut out.index, &manifest),
+                Err(err) => log::debug!("index: failed to read '{}': {err}", file.path),
+            }
         } else if name_lower.ends_with(".ymt") && peds {
             ped_candidates.entry(rage_joaat(&stem)).or_default().ymt = Some(loc());
         } else if name_lower.ends_with(".yld") && peds {
@@ -1146,6 +1245,43 @@ fn index_archive(archive: &Archive, archive_path: &Path, nested_rpfs: &[String],
                 }
             }
             out.index.ped_files.entry(hash).or_default().merge(files);
+        }
+    }
+}
+
+/// The world files the region plot reads, by name: CodeWalker's
+/// `Heightmaps.Init` and `Water.Init` name them under
+/// `common/data/levels/gta5`.
+const WORLD_FILES: [&str; 4] = ["heightmap.dat", "heightmapheistisland.dat", "water.xml", "water_heistisland.xml"];
+
+/// Whether an archive path sits under a `levels/gta5` folder, which tells
+/// the game's `water.xml` from the stripped one beside it.
+fn under_levels_gta5(path: &str) -> bool {
+    let path = path.to_lowercase().replace('\\', "/");
+    path.contains("levels/gta5/")
+}
+
+/// `Space.InitCacheData`'s manifest pass: the hours and weathers of every
+/// map data group, later manifests winning.
+fn record_map_groups(out: &mut GameIndex, manifest: &rage_formats::Manifest) {
+    for group in &manifest.map_data_groups {
+        let hash = match &group.name.name {
+            Some(name) => rage_joaat(&name.to_lowercase()),
+            None => group.name.hash,
+        };
+        if group.hours_on_off != 0 {
+            out.map_hours.insert(hash, group.hours_on_off);
+        }
+        if !group.weather_types.is_empty() {
+            let weathers = group
+                .weather_types
+                .iter()
+                .map(|w| match &w.name {
+                    Some(name) => rage_joaat(&name.to_lowercase()),
+                    None => w.hash,
+                })
+                .collect();
+            out.map_weathers.insert(hash, weathers);
         }
     }
 }
@@ -1276,8 +1412,9 @@ const MAGIC: u32 = 0x5850_4652; // "RPFX" little-endian
 // asset bindings.
 // 8: one file per part, each carrying the archives' fingerprint; entries
 // written in key order. 9: archetype LOD distances. 10-11: archetype ytyp
-// bindings and ytyp locations. 12: the peds and vehicles parts.
-const FORMAT_VERSION: u32 = 12;
+// bindings and ytyp locations. 12: the peds and vehicles parts. 13: the
+// world part.
+const FORMAT_VERSION: u32 = 13;
 
 fn write_u32(buf: &mut Vec<u8>, v: u32) {
     buf.extend_from_slice(&v.to_le_bytes());
@@ -1447,6 +1584,38 @@ fn encode_part(index: &GameIndex, part: Parts, fingerprint: u64) -> Vec<u8> {
                 write_hashes(&mut buf, &kit.livery2_names);
             }
         }
+        Parts::WORLD => {
+            write_u32(&mut buf, index.map_nodes.len() as u32);
+            for (hash, node) in sorted(&index.map_nodes) {
+                write_u32(&mut buf, hash);
+                write_u32(&mut buf, node.parent);
+                write_u32(&mut buf, node.content_flags);
+                for v in [node.streaming_min, node.streaming_max, node.entities_min, node.entities_max] {
+                    for f in [v.x, v.y, v.z] {
+                        buf.extend_from_slice(&f.to_le_bytes());
+                    }
+                }
+                buf.extend_from_slice(&node.flags);
+            }
+            write_locs(&mut buf, &index.ymap_by_name);
+            write_locs(&mut buf, &index.ynv_by_name);
+            write_locs(&mut buf, &index.ynd_by_name);
+            write_u32(&mut buf, index.bounds_store.len() as u32);
+            for (hash, item) in sorted(&index.bounds_store) {
+                write_u32(&mut buf, hash);
+                for f in [item.min.x, item.min.y, item.min.z, item.max.x, item.max.y, item.max.z] {
+                    buf.extend_from_slice(&f.to_le_bytes());
+                }
+                write_u32(&mut buf, item.layer);
+            }
+            write_pairs(&mut buf, &index.map_hours);
+            write_u32(&mut buf, index.map_weathers.len() as u32);
+            for (hash, weathers) in sorted(&index.map_weathers) {
+                write_u32(&mut buf, hash);
+                write_hashes(&mut buf, weathers);
+            }
+            write_locs(&mut buf, &index.world_files);
+        }
         _ => unreachable!("encode_part takes a single part"),
     }
     buf
@@ -1484,6 +1653,12 @@ impl<'a> Cursor<'a> {
         let bytes = self.data.get(self.pos..self.pos + len).context("index: truncated (bytes)")?;
         self.pos += len;
         Ok(bytes.to_vec())
+    }
+
+    fn bytes_n<const N: usize>(&mut self) -> Result<[u8; N]> {
+        let bytes = self.data.get(self.pos..self.pos + N).context("index: truncated (bytes)")?;
+        self.pos += N;
+        Ok(bytes.try_into().unwrap())
     }
 
     /// A count read from the file, which may be truncated or garbled:
@@ -1690,6 +1865,42 @@ fn decode_part(data: &[u8], part: Parts) -> Result<(u64, GameIndex)> {
                 index.car_kits.insert(hash, KitEntry { id, livery_names, livery2_names });
             }
         }
+        Parts::WORLD => {
+            let (n, cap) = c.count()?;
+            index.map_nodes.reserve(cap);
+            for _ in 0..n {
+                let name = c.u32()?;
+                let parent = c.u32()?;
+                let content_flags = c.u32()?;
+                let mut boxes = [Vec3::new(0.0, 0.0, 0.0); 4];
+                for v in boxes.iter_mut() {
+                    *v = Vec3::new(c.f32()?, c.f32()?, c.f32()?);
+                }
+                let flags: [u8; 4] = c.bytes_n()?;
+                let [streaming_min, streaming_max, entities_min, entities_max] = boxes;
+                index.map_nodes.insert(name, MapDataNode { name, parent, content_flags, streaming_min, streaming_max, entities_min, entities_max, flags });
+            }
+            index.ymap_by_name = read_locs(&mut c)?;
+            index.ynv_by_name = read_locs(&mut c)?;
+            index.ynd_by_name = read_locs(&mut c)?;
+            let (n, cap) = c.count()?;
+            index.bounds_store.reserve(cap);
+            for _ in 0..n {
+                let name = c.u32()?;
+                let min = Vec3::new(c.f32()?, c.f32()?, c.f32()?);
+                let max = Vec3::new(c.f32()?, c.f32()?, c.f32()?);
+                let layer = c.u32()?;
+                index.bounds_store.insert(name, BoundsStoreItem { name, min, max, layer });
+            }
+            index.map_hours = read_pairs(&mut c)?;
+            let (n, cap) = c.count()?;
+            index.map_weathers.reserve(cap);
+            for _ in 0..n {
+                let hash = c.u32()?;
+                index.map_weathers.insert(hash, read_hashes(&mut c)?);
+            }
+            index.world_files = read_locs(&mut c)?;
+        }
         _ => bail!("index: {} is not a single part", part.0),
     }
     if c.pos != data.len() {
@@ -1743,6 +1954,19 @@ mod tests {
         index.car_colors.push(CarColorEntry { color: 0xFF8B_1A13, name: "Dark Red".into(), metallic_id: -1 });
         index.car_variations.insert(30, VariationEntry { colors: vec![(vec![111, 111, 0, 156], vec![true, false, true]), (vec![1, 2, 3, 4], vec![])], kits: vec![31, 32] });
         index.car_kits.insert(31, KitEntry { id: 414, livery_names: vec![40, 41], livery2_names: vec![] });
+        index.map_nodes.insert(50, MapDataNode {
+            name: 50, parent: 51, content_flags: 3,
+            streaming_min: Vec3::new(-10.0, -20.0, -30.0), streaming_max: Vec3::new(10.0, 20.0, 30.0),
+            entities_min: Vec3::new(-1.0, -2.0, -3.0), entities_max: Vec3::new(1.0, 2.0, 3.0),
+            flags: [1, 0, 2, 0],
+        });
+        index.ymap_by_name.insert(50, loc("hei_dt1_02_0.ymap"));
+        index.ynv_by_name.insert(52, loc("navmesh[108][96].ynv"));
+        index.ynd_by_name.insert(53, loc("nodes489.ynd"));
+        index.bounds_store.insert(54, BoundsStoreItem { name: 54, min: Vec3::new(0.0, 1.0, 2.0), max: Vec3::new(3.0, 4.0, 5.0), layer: 1 });
+        index.map_hours.insert(55, 0x00FF_F000);
+        index.map_weathers.insert(55, vec![56, 57]);
+        index.world_files.insert(58, loc("common/data/levels/gta5/water.xml"));
         index
     }
 
@@ -1777,6 +2001,14 @@ mod tests {
         assert_eq!(back.car_colors, index.car_colors);
         assert_eq!(back.car_variations, index.car_variations);
         assert_eq!(back.car_kits, index.car_kits);
+        assert_eq!(back.map_nodes, index.map_nodes);
+        assert_eq!(back.ymap_by_name, index.ymap_by_name);
+        assert_eq!(back.ynv_by_name, index.ynv_by_name);
+        assert_eq!(back.ynd_by_name, index.ynd_by_name);
+        assert_eq!(back.bounds_store, index.bounds_store);
+        assert_eq!(back.map_hours, index.map_hours);
+        assert_eq!(back.map_weathers, index.map_weathers);
+        assert_eq!(back.world_files, index.world_files);
     }
 
     /// A later archive's ped files replace an earlier one's field by field,
@@ -1939,7 +2171,8 @@ mod tests {
         assert!(p.contains(Parts::TEXTURES) && p.contains(Parts::MODELS) && !p.contains(Parts::INTERIORS));
         assert!(!p.contains(Parts::NONE));
         assert_eq!(p.describe(), "textures, models");
-        assert_eq!(Parts::ALL.each().count(), 5);
+        assert_eq!(Parts::ALL.each().count(), 6);
+        assert_eq!((Parts::WORLD | Parts::PEDS).describe(), "peds, world");
         assert_eq!((Parts::PEDS | Parts::VEHICLES).describe(), "peds, vehicles");
         assert!(Parts::NONE.is_empty());
     }
