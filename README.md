@@ -1155,7 +1155,9 @@ src/
   props.rs           what to draw for a placed entity: a folder model, a game model through the index, a box, or nothing
   names.rs           the name table `resource` prints through: built-in, harvested, `--names`, sibling file stems
   navmesh/mod.rs     the generator: grid, blocking, rectangles, edge linking, sinking
-  index.rs           the game index in three parts: build (archives in load order), per-part cache, lookups
+  index.rs           the game index in five parts: build (archives in load order), per-part cache, lookups
+  peds.rs            composing a ped from its variation info, as CodeWalker's ped viewer does
+  vehicles.rs        vehicle variants: the _hi model, livery texture swaps, paint from carcols
   resources.rs       loading a resource by name from an archive or from disk
   keys.rs, paths.rs  key recovery/caching and the per-user directory
   update.rs          release check and self-update
