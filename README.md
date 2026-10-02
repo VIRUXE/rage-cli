@@ -3,9 +3,11 @@
 A command-line tool for GTA V game files, written in Rust. It opens RPF
 archives (including the encrypted retail ones, given your own game install),
 finds files across nested archives without extracting them, inspects and
-exports the resources inside, renders models to pictures, turns maps, models
-and collision into CodeWalker's XML and back into game files, and reads and
-writes navmeshes and path nodes. No CodeWalker, no GPU, no game running.
+exports the resources inside, renders models, peds and vehicles to pictures,
+turns maps, models and collision into CodeWalker's XML and back into game
+files, reads and writes navmeshes and path nodes, generates LOD lights and
+manifests, and draws plans of interiors, resources and whole boxes of the
+vanilla map from above. No CodeWalker, no GPU, no game running.
 
 ![Heist duffel bag rendered from four angles](docs/images/screenshot-heist-bag-grid.jpg)
 
@@ -43,8 +45,11 @@ can use on their own.
        | rpf-archive         |   | rage-formats         |   | rage-render        |
        | RPF0..RPF8 and IMG  |   | RSC7 resources:      |   | CPU rasteriser,    |
        | archives, NG/AES    |   | ytd ydr ydd yft ymt  |   | contact sheets,    |
-       | keys, RPF writer,   |   | ytyp ymap ybn ynv ynd|   | bitmap font,       |
-       | DLC load order      |   | read, write, XML     |   | wasm glTF export   |
+       | keys, RPF writer,   |   | ytyp ymap ybn ynv ynd|   | bitmap font, 2D    |
+       | DLC load order      |   | read, write, XML;    |   | plans (contours,   |
+       |                     |   | peds/vehicles meta,  |   | water, navmesh),   |
+       |                     |   | cache, heightmap,    |   | wasm glTF export   |
+       |                     |   | water                |   |                    |
        +---------------------+   +----------+-----------+   +--------------------+
                                             ^                        |
                                             +------------------------+
@@ -89,7 +94,14 @@ rage extract "$GTAV_PATH/x64c.rpf" "*/lev_des.rpf" -o ./nested
 rage screenshot ./nested/levels/gta5/props/lev_des/lev_des.rpf prop_cs_heist_bag_01.ydr --views front,iso --grid
 ```
 
-Three commands, one picture. The rest of this document is variations on that.
+Three commands, one picture. Two more, no extracting at all:
+
+```sh
+rage screenshot --vehicle police --hi --livery 2 --views front,iso --grid   # a vehicle by name, through the index
+rage plot --game --region=-1700,-1200,-1100,-600 -o docks.png             # a 600 m box of the map from above
+```
+
+The rest of this document is variations on these.
 
 ## Concepts
 
@@ -134,10 +146,22 @@ and the result is cached per game build.
 
 **The game index.** Some answers need the whole game: which dictionary holds
 the textures a model references, which map places an interior, which file
-holds a vanilla prop's model. Commands that need one of these scan the
-archives the first time, in under a second on an SSD, and cache the result
-under `~/.rage-cli/index`. Nothing has to be run by hand, and the cache is
-rebuilt by itself when an archive changes.
+holds a vanilla prop's model, which files make up a ped or a vehicle, which
+maps cover a spot. Commands that need one of these scan the archives the
+first time, in seconds on an SSD, and cache the result under
+`~/.rage-cli/index`, one file per part. Nothing has to be run by hand, and
+the cache is rebuilt by itself when an archive changes.
+
+**The world.** The game does not open 19,000 maps to find out what to draw:
+each map pack ships a `cache_y.dat` naming every `.ymap` with its parent map
+and the box it streams in, and the game streams the maps whose box holds the
+camera and their parents. Inside a map, entities form a LOD tree: an HD prop
+has a LOD parent in the parent map, that one a SLOD parent further up, and
+only one level is drawn at a given distance. `plot --game` follows the same
+cache, the same tree and the same distance rule, so a plan of a box shows
+what the game's own map view shows at that zoom. The water surface is
+`water.xml`'s quads and the ground `heightmap.dat`'s coarse grid; both are
+layers of that plan.
 
 **Navmesh cells.** Pathfinding runs on `.ynv` files, one per 150 m grid cell,
 named `navmesh[X][Y].ynv` with X and Y the cell index times three. Interiors
