@@ -630,6 +630,50 @@ impl GameIndex {
         out.join(", ")
     }
 
+    /// Reads many located entries at once: grouped by top archive and
+    /// nested chain so each archive is opened once, the top archives read
+    /// in parallel. One result per `locs` entry, in order; a file that
+    /// could not be read is `Err`, the rest are unaffected.
+    pub fn load_batch(&self, locs: &[EntryLoc], keys: Option<&GtaKeys>) -> Vec<Result<Vec<u8>>> {
+        use rayon::prelude::*;
+
+        let mut groups: HashMap<&Path, HashMap<&[String], Vec<usize>>> = HashMap::new();
+        for (i, loc) in locs.iter().enumerate() {
+            groups.entry(loc.top_archive.as_path()).or_default().entry(loc.nested_rpfs.as_slice()).or_default().push(i);
+        }
+        let mut found: Vec<(usize, Result<Vec<u8>>)> = groups
+            .into_par_iter()
+            .flat_map_iter(|(top, chains)| {
+                let mut out = Vec::new();
+                let top_archive = Archive::open(top, keys).and_then(|a| a.require_keys(keys).map(|_| a));
+                for (chain, seqs) in chains {
+                    let archive = match &top_archive {
+                        Ok(top_archive) if chain.is_empty() => Ok(None),
+                        Ok(top_archive) => open_chain(top_archive, chain, keys).map(Some),
+                        Err(err) => Err(anyhow::anyhow!("{err}")),
+                    };
+                    for seq in seqs {
+                        let inner = &locs[seq].inner_path;
+                        let data = match (&archive, &top_archive) {
+                            (Err(err), _) | (_, Err(err)) => Err(anyhow::anyhow!("{}: {err}", top.display())),
+                            (Ok(nested), Ok(top_archive)) => {
+                                let archive = nested.as_ref().unwrap_or(top_archive);
+                                archive
+                                    .find_file(inner)
+                                    .with_context(|| format!("'{inner}' not found in {}", top.display()))
+                                    .and_then(|file| archive.extract(file, keys))
+                            }
+                        };
+                        out.push((seq, data));
+                    }
+                }
+                out
+            })
+            .collect();
+        found.sort_by_key(|(seq, _)| *seq);
+        found.into_iter().map(|(_, data)| data).collect()
+    }
+
     /// The parts of the index a command needs: read from the cache, and
     /// whatever is missing or stale built now and cached. `None` (with a
     /// warning, not an error — callers each have their own fallback) when

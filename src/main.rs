@@ -15,6 +15,7 @@ mod vehicles;
 mod paths;
 mod plot_inputs;
 mod props;
+mod region;
 mod resources;
 mod update;
 mod utils;
