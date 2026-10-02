@@ -745,9 +745,7 @@ dependencies = [
 
 [[package]]
 name = "rage-formats"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "40855c72538f6e6cc03ab95a88a8afe636f63422a735ae90ce475caff287ff02"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "flate2",
@@ -760,9 +758,7 @@ dependencies = [
 
 [[package]]
 name = "rage-render"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3ba260692ce8643f3afdcfed7ca408530fc68883355ce744833951d4041738db"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "console_error_panic_hook",

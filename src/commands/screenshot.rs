@@ -1,14 +1,16 @@
 use anyhow::{Context, Result};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use rage_formats::{encode_image, wheel_slot, DrawableEntry, ImageFormat, LodLevel};
+use rage_formats::{encode_image, rage_joaat, wheel_slot, DrawableEntry, ImageFormat, LodLevel};
 use rage_render::{compose_sheet, render_parts, RenderOptions, RenderPart, SheetItem, SheetOptions,
                   TextureSet, View};
 
 use crate::index::{GameIndex, Parts};
-use crate::resources::{embedded_textures_of, file_stem, load_renderables, load_texture_dictionary, sanitize,
-                       Loaded};
+use crate::peds::{self, SlotChoice};
+use crate::resources::{drawable_kind_of, embedded_textures_of, file_stem, load_renderables, load_texture_dictionary,
+                       parse_renderables, sanitize, Loaded};
 use crate::rpf::{Archive, GtaKeys};
+use crate::vehicles;
 
 /// JPEG quality used for the rendered images (PNG/WebP ignore it).
 const QUALITY: u8 = 90;
@@ -18,11 +20,44 @@ const MAX_GRID_CELL: u32 = 512;
 
 #[derive(clap::Args)]
 pub struct ScreenshotArgs {
-    /// Path to the RPF archive
-    pub archive: PathBuf,
+    /// Path to the RPF archive (not needed with --ped or --vehicle)
+    #[arg(required_unless_present_any = ["ped", "vehicle"], conflicts_with_all = ["ped", "vehicle"])]
+    pub archive: Option<PathBuf>,
 
     /// Name of a .ydr, .ydd or .yft inside the archive
-    pub file: String,
+    #[arg(required_unless_present_any = ["ped", "vehicle"], requires = "archive")]
+    pub file: Option<String>,
+
+    /// Compose a ped by name from its variation info, through the game index
+    /// (needs --exe or GTAV_PATH): every slot gets its first drawable and texture
+    #[arg(long, value_name = "NAME", conflicts_with_all = ["vehicle", "entry", "hi", "livery", "colour_from", "no_index"])]
+    pub ped: Option<String>,
+
+    /// With --ped: what a slot shows, as SLOT=D[:T[:A]] (drawable, texture and
+    /// alternative indices) or SLOT=none; slots are head berd hair uppr lowr
+    /// hand feet teef accs task decl jbib. Repeatable
+    #[arg(long = "component", value_name = "SLOT=SPEC", requires = "ped")]
+    pub component: Vec<String>,
+
+    /// Render a vehicle by name, its .yft found through the game index
+    /// (needs --exe or GTAV_PATH)
+    #[arg(long, value_name = "NAME", conflicts_with = "no_index")]
+    pub vehicle: Option<String>,
+
+    /// Use the high-detail NAME_hi.yft when the game has one
+    #[arg(long)]
+    pub hi: bool,
+
+    /// Show livery N (0-based): every *_sign_1 texture the model references
+    /// is read from *_sign_<N+1> instead
+    #[arg(long, value_name = "N")]
+    pub livery: Option<usize>,
+
+    /// Paint the vehicle from the game's data: "carcols" or "carcols:C" takes
+    /// the primary colour of colour combination C (default 0) of the model's
+    /// carvariations entry, looked up in carcols (needs --exe or GTAV_PATH)
+    #[arg(long = "colour-from", alias = "color-from", value_name = "carcols[:C]", conflicts_with = "paint", value_parser = parse_colour_from)]
+    pub colour_from: Option<ColourFrom>,
 
     /// Output directory (default: current directory)
     #[arg(short, long, value_name = "DIR")]
@@ -84,6 +119,23 @@ pub struct ScreenshotArgs {
     /// geometry (the far pieces are always drawn either way)
     #[arg(long)]
     pub no_cluster_framing: bool,
+}
+
+/// `--colour-from carcols[:C]`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ColourFrom {
+    /// Which colour combination of the model's carvariations entry.
+    pub combination: usize,
+}
+
+fn parse_colour_from(value: &str) -> Result<ColourFrom, String> {
+    let value = value.trim();
+    let (source, combination) = value.split_once(':').unwrap_or((value, "0"));
+    if !source.eq_ignore_ascii_case("carcols") {
+        return Err(format!("expected carcols or carcols:C, got '{value}'"));
+    }
+    let combination = combination.trim().parse().map_err(|_| format!("'{combination}' is not a combination index in '{value}'"))?;
+    Ok(ColourFrom { combination })
 }
 
 /// Parses a `#rrggbb` paint colour.
@@ -246,14 +298,16 @@ fn label_for(name: &str, hash: u32) -> String {
     }
 }
 
-/// One image set to render: a plain drawable, or a fragment's body with its
-/// wheels and doors placed on it.
+/// One image set to render: a plain drawable, a fragment's body with its
+/// wheels and doors placed on it, or a ped's components.
 struct Renderable<'a> {
     label: String,
     hash: u32,
     parts: Vec<RenderPart<'a>>,
     /// Wheel slots drawn (including ones filled from another wheel's mesh).
     wheels: usize,
+    /// What the composite's parts are called in the summary.
+    parts_noun: &'static str,
 }
 
 /// Lists what to render: each .ydr/.ydd entry on its own; a fragment as one
@@ -267,6 +321,7 @@ fn renderables(loaded: &Loaded) -> Vec<Renderable<'_>> {
                 hash: entry.hash,
                 parts: vec![RenderPart::new(&entry.drawable)],
                 wheels: 0,
+                parts_noun: "parts",
             })
             .collect(),
         Loaded::Fragment(fragment) => {
@@ -283,6 +338,7 @@ fn renderables(loaded: &Loaded) -> Vec<Renderable<'_>> {
                     hash: body.name_hash,
                     parts: fragment_parts.into_iter().map(RenderPart::from).collect(),
                     wheels,
+                    parts_noun: "parts",
                 });
             }
             for extra in &fragment.extra_drawables {
@@ -291,6 +347,7 @@ fn renderables(loaded: &Loaded) -> Vec<Renderable<'_>> {
                     hash: extra.hash,
                     parts: vec![RenderPart::new(&extra.drawable)],
                     wheels: 0,
+                    parts_noun: "parts",
                 });
             }
             out
@@ -298,23 +355,29 @@ fn renderables(loaded: &Loaded) -> Vec<Renderable<'_>> {
     }
 }
 
-/// Builds the texture set: embedded textures first, then one layer per
-/// `--ytd`, then whatever the game-wide index resolves (or, with no index
-/// available, the same-stem guess this always made).
+/// Builds the texture set: `embedded` first, then one layer per `--ytd`,
+/// then whatever the game-wide index resolves for `texture_stem` (or, with
+/// no index available, the same-stem guess this always made in `archive`).
 fn build_texture_set(
-    archive: &Archive,
-    args: &ScreenshotArgs,
-    loaded: &Loaded,
+    archive: Option<&Archive>,
+    ytd_specs: &[String],
+    texture_stem: &str,
+    embedded: &[rage_formats::YtdTexture],
     keys: Option<&GtaKeys>,
     index: Option<&GameIndex>,
 ) -> TextureSet {
     let mut set = TextureSet::new();
+    report_failed(&set.push_layer(embedded), "embedded");
 
-    let embedded: Vec<_> = embedded_textures_of(loaded.drawables()).into_iter().cloned().collect();
-    report_failed(&set.push_layer(&embedded), "embedded");
-
-    for spec in &args.ytd {
-        match load_texture_dictionary(archive, spec, keys) {
+    for spec in ytd_specs {
+        let loaded = match archive {
+            Some(archive) => load_texture_dictionary(archive, spec, keys),
+            None if Path::new(spec).is_file() => std::fs::read(spec)
+                .with_context(|| format!("failed to read '{spec}'"))
+                .and_then(|data| rage_formats::parse_ytd(&data).with_context(|| format!("failed to parse YTD '{spec}'"))),
+            None => Err(anyhow::anyhow!("'{spec}' is not a file (without an archive, --ytd takes loose .ytd files)")),
+        };
+        match loaded {
             Ok(textures) => {
                 println!("Using texture dictionary {} ({} texture(s))", spec, textures.len());
                 report_failed(&set.push_layer(&textures), spec);
@@ -327,7 +390,8 @@ fn build_texture_set(
         // No index available (--no-index, or no --exe/--keys to build one
         // from): fall back to the one guess rpf-cli has always made — a
         // same-name .ytd in this same archive.
-        let fallback = format!("{}.ytd", file_stem(&args.file));
+        let Some(archive) = archive else { return set };
+        let fallback = format!("{texture_stem}.ytd");
         match load_texture_dictionary(archive, &fallback, keys) {
             Ok(textures) => {
                 println!("Using texture dictionary {} ({} texture(s))", fallback, textures.len());
@@ -341,7 +405,7 @@ fn build_texture_set(
     // The index-driven order (archetype's own texture dictionary, then the
     // same-stem guess, then any parent chain) is a strict superset of the
     // no-index fallback above, searched game-wide instead of one archive.
-    let stem_hash = rage_formats::rage_joaat(&file_stem(&args.file).to_lowercase());
+    let stem_hash = rage_joaat(&texture_stem.to_lowercase());
     for txd_hash in index.resolution_order(stem_hash) {
         let Some(loc) = index.ytd_by_name.get(&txd_hash) else {
             log::debug!("no .ytd for txd hash {txd_hash:08X} in the resolution order");
@@ -380,7 +444,7 @@ fn push_resident_fallback(
 ) -> bool {
     let mut wanted: Vec<u32> = Vec::new();
     for name in missing {
-        let Some(dict) = index.resident_dict_for_texture(rage_formats::rage_joaat(&name.to_lowercase())) else {
+        let Some(dict) = index.resident_dict_for_texture(rage_joaat(&name.to_lowercase())) else {
             continue;
         };
         if !already_loaded.contains(&dict) && !wanted.contains(&dict) {
@@ -404,7 +468,7 @@ fn push_resident_fallback(
                 report_failed(&set.push_layer(&textures), &loc.inner_path);
                 added = true;
             }
-            Err(err) => eprintln!("warning: failed to load resident dictionary '{}': {}", loc.inner_path, err),
+            Err(err) => eprintln!("warning: failed to load resident dictionary '{}': {err}", loc.inner_path),
         }
     }
     added
@@ -417,29 +481,162 @@ fn report_failed(failed: &[String], source: &str) {
     }
 }
 
+/// Which parts of the game index this invocation needs.
+fn parts_needed(args: &ScreenshotArgs) -> Parts {
+    if args.ped.is_some() {
+        return Parts::TEXTURES | Parts::PEDS;
+    }
+    let mut parts = Parts::TEXTURES;
+    if args.hi || args.vehicle.is_some() {
+        parts |= Parts::MODELS;
+    }
+    if args.vehicle.is_some() || args.livery.is_some() || args.colour_from.is_some() {
+        parts |= Parts::VEHICLES;
+    }
+    parts
+}
+
 pub fn run(args: &ScreenshotArgs, keys: Option<&GtaKeys>, exe: Option<&std::path::Path>) -> Result<()> {
-    let archive = Archive::open(&args.archive, keys)?;
-    archive.require_keys(keys)?;
+    let index = if args.no_index { None } else { GameIndex::load(exe, keys, parts_needed(args)) };
+    if let Some(ped) = &args.ped {
+        return run_ped(args, ped, keys, index.as_ref());
+    }
+    run_model(args, keys, index.as_ref())
+}
 
-    let loaded = load_renderables(&archive, &args.file, keys)?;
+/// `--ped NAME`: the ped composed from its variation info, drawn as one
+/// composite named after it.
+fn run_ped(args: &ScreenshotArgs, ped: &str, keys: Option<&GtaKeys>, index: Option<&GameIndex>) -> Result<()> {
+    let index = index.context("--ped needs the game index: pass --exe or set GTAV_PATH")?;
+    let choices = args
+        .component
+        .iter()
+        .map(|spec| peds::parse_component(spec))
+        .collect::<Result<Vec<(usize, SlotChoice)>, String>>()
+        .map_err(anyhow::Error::msg)?;
+    let composed = peds::compose(index, keys, ped, &choices)?;
+    for slot in &composed.slots {
+        println!("{}", slot.line());
+    }
+    for warning in &composed.warnings {
+        eprintln!("warning: {warning}");
+    }
+    if composed.is_empty() {
+        anyhow::bail!("no component of '{}' could be loaded", composed.name);
+    }
+
+    let stem = composed.name.to_lowercase();
+    let mut textures = build_texture_set(None, &args.ytd, &stem, &composed.textures, keys, Some(index));
+    let entries = vec![Renderable {
+        label: composed.name.clone(),
+        hash: rage_joaat(&stem),
+        parts: composed.render_parts(),
+        wheels: 0,
+        parts_noun: "components",
+    }];
+    render_all(&entries, &mut textures, &stem, args, args.paint, Some(index), keys)
+}
+
+/// A model from an archive or, with `--vehicle`, from the game: with the
+/// `_hi` swap, livery and paint applied.
+fn run_model(args: &ScreenshotArgs, keys: Option<&GtaKeys>, index: Option<&GameIndex>) -> Result<()> {
+    let mut warnings: Vec<String> = Vec::new();
+    // The model's bytes and name, the archive it came from (none for
+    // --vehicle), the stem images are named by, and the vehicle name
+    // textures and paint are looked up by.
+    let (archive, loaded, stem, vehicle_name) = if let Some(name) = &args.vehicle {
+        let index = index.context("--vehicle needs the game index: pass --exe or set GTAV_PATH")?;
+        let model = vehicles::resolve_vehicle(index, name, args.hi)?;
+        warnings.extend(model.warnings.iter().cloned());
+        let data = index.load_bytes(&model.loc, keys)?;
+        let loaded = parse_renderables(&model.loc.inner_path, drawable_kind_of(&model.loc.inner_path)?, &data)?;
+        println!("Rendering {} ({})", model.stem, model.loc.inner_path);
+        (None, loaded, model.stem.clone(), model.name.clone())
+    } else {
+        let archive_path = args.archive.as_ref().expect("clap requires an archive without --ped/--vehicle");
+        let file = args.file.as_ref().expect("clap requires a file with an archive");
+        let archive = Archive::open(archive_path, keys)?;
+        archive.require_keys(keys)?;
+        let mut loaded = load_renderables(&archive, file, keys)?;
+        let mut stem = file_stem(file);
+        if args.hi {
+            match vehicles::hi_model_bytes(&archive, &stem, index, keys)? {
+                Some((hi_stem, data)) => {
+                    loaded = parse_renderables(&format!("{hi_stem}.yft"), rage_formats::DrawableKind::Yft, &data)?;
+                    println!("Rendering {hi_stem}.yft");
+                    stem = hi_stem;
+                }
+                None => warnings.push(format!("no {}_hi.yft in the archive or the game; rendering {file}", stem.to_lowercase())),
+            }
+        }
+        let vehicle_name = vehicles::base_name(&stem);
+        (Some(archive), loaded, stem, vehicle_name)
+    };
+    for warning in &warnings {
+        eprintln!("warning: {warning}");
+    }
+
     let mut entries = renderables(&loaded);
-
     if let Some(filter) = &args.entry {
         entries.retain(|entry| entry_matches(&entry.label, entry.hash, filter));
         if entries.is_empty() {
-            anyhow::bail!("no entry matching '{}' in '{}'", filter, args.file);
+            anyhow::bail!("no entry matching '{}' in '{}'", filter, stem);
+        }
+    }
+    if entries.is_empty() {
+        anyhow::bail!("'{}' holds no drawables", stem);
+    }
+
+    let embedded: Vec<_> = embedded_textures_of(loaded.drawables()).into_iter().cloned().collect();
+    let mut textures = build_texture_set(archive.as_ref(), &args.ytd, &vehicle_name, &embedded, keys, index);
+
+    if let Some(livery) = args.livery {
+        let swaps = vehicles::apply_livery(&mut textures, loaded.drawables(), livery);
+        if swaps.is_empty() {
+            eprintln!("warning: {stem} references no *_sign_1 texture; it has no liveries to swap");
+        }
+        for swap in &swaps {
+            if swap.found {
+                println!("Livery {livery}: {} -> {}", swap.from, swap.to);
+            } else {
+                eprintln!("warning: livery {livery}: {} is not in any texture dictionary loaded; {} stays", swap.to, swap.from);
+            }
+        }
+        if let Some(index) = index {
+            for warning in vehicles::livery_warnings(index, &vehicle_name, livery) {
+                eprintln!("warning: {warning}");
+            }
         }
     }
 
-    if entries.is_empty() {
-        anyhow::bail!("'{}' holds no drawables", args.file);
-    }
+    let paint = match &args.colour_from {
+        Some(from) => {
+            let index = index.context("--colour-from needs the game index: pass --exe or set GTAV_PATH")?;
+            let paint = vehicles::paint_from_carcols(index, &vehicle_name, from.combination)?;
+            println!(
+                "Paint: {} (#{:02x}{:02x}{:02x}, carcols colour {}, combination {})",
+                paint.name, paint.rgb[0], paint.rgb[1], paint.rgb[2], paint.index, from.combination
+            );
+            Some(paint.rgb)
+        }
+        None => args.paint,
+    };
 
-    let index = if args.no_index { None } else { GameIndex::load(exe, keys, Parts::TEXTURES) };
-    let mut textures = build_texture_set(&archive, args, &loaded, keys, index.as_ref());
+    render_all(&entries, &mut textures, &stem, args, paint, index, keys)
+}
+
+/// Renders every entry from every view and writes the images (and grids).
+fn render_all(
+    entries: &[Renderable<'_>],
+    textures: &mut TextureSet,
+    stem: &str,
+    args: &ScreenshotArgs,
+    paint: Option<[u8; 3]>,
+    index: Option<&GameIndex>,
+    keys: Option<&GtaKeys>,
+) -> Result<()> {
     let mut resident_loaded: Vec<u32> = Vec::new();
 
-    let stem = file_stem(&args.file);
     let out_dir = args.output.clone().unwrap_or_else(|| PathBuf::from("."));
     std::fs::create_dir_all(&out_dir)
         .with_context(|| format!("failed to create {}", out_dir.display()))?;
@@ -458,16 +655,16 @@ pub fn run(args: &ScreenshotArgs, keys: Option<&GtaKeys>, exe: Option<&std::path
         lod: args.lod,
         backface_cull: args.cull,
         vertex_colors: args.vertex_colors,
-        paint: args.paint,
+        paint,
         cluster_framing: !args.no_cluster_framing,
         ..Default::default()
     };
 
     let mut written = 0usize;
 
-    for entry in &entries {
+    for entry in entries {
         let label = &entry.label;
-        let mut rendered = render_parts(&entry.parts, &textures, &options, &views)
+        let mut rendered = render_parts(&entry.parts, textures, &options, &views)
             .with_context(|| format!("failed to render '{}'", label))?;
 
         let mut report = rendered
@@ -481,10 +678,10 @@ pub fn run(args: &ScreenshotArgs, keys: Option<&GtaKeys>, exe: Option<&std::path
         // something was actually missing and a layer was genuinely added —
         // the overwhelmingly common case is nothing missing at all.
         if !report.missing_textures.is_empty()
-            && let Some(index) = index.as_ref()
-            && push_resident_fallback(&mut textures, &report.missing_textures, index, keys, &mut resident_loaded)
+            && let Some(index) = index
+            && push_resident_fallback(textures, &report.missing_textures, index, keys, &mut resident_loaded)
         {
-            rendered = render_parts(&entry.parts, &textures, &options, &views)
+            rendered = render_parts(&entry.parts, textures, &options, &views)
                 .with_context(|| format!("failed to re-render '{}'", label))?;
             report = rendered
                 .first()
@@ -492,8 +689,10 @@ pub fn run(args: &ScreenshotArgs, keys: Option<&GtaKeys>, exe: Option<&std::path
                 .unwrap_or_default();
         }
 
-        let parts = if entry.parts.len() > 1 {
-            format!(", {} parts ({} wheels)", entry.parts.len(), entry.wheels)
+        let parts = if entry.parts.len() > 1 && entry.wheels > 0 {
+            format!(", {} {} ({} wheels)", entry.parts.len(), entry.parts_noun, entry.wheels)
+        } else if entry.parts.len() > 1 {
+            format!(", {} {}", entry.parts.len(), entry.parts_noun)
         } else {
             String::new()
         };
@@ -510,7 +709,7 @@ pub fn run(args: &ScreenshotArgs, keys: Option<&GtaKeys>, exe: Option<&std::path
 
         for (view, image, _) in &rendered {
             let view_part = many_views.then(|| view.label());
-            let file_name = image_file_name(&stem, entry_part, view_part, ext);
+            let file_name = image_file_name(stem, entry_part, view_part, ext);
             let path = out_dir.join(&file_name);
             let encoded = encode_image(image, args.format, QUALITY)?;
             std::fs::write(&path, encoded)
@@ -533,7 +732,7 @@ pub fn run(args: &ScreenshotArgs, keys: Option<&GtaKeys>, exe: Option<&std::path
 
             let sheet = compose_sheet(&items, &sheet_options);
             let encoded = encode_image(&sheet, args.format, QUALITY)?;
-            let file_name = image_file_name(&stem, entry_part, Some("grid"), ext);
+            let file_name = image_file_name(stem, entry_part, Some("grid"), ext);
             let path = out_dir.join(&file_name);
             std::fs::write(&path, encoded)
                 .with_context(|| format!("failed to write {}", path.display()))?;
@@ -586,6 +785,28 @@ mod tests {
         assert!(parse_paint("red").is_err());
         assert!(parse_paint("#fff").is_err());
         assert!(parse_paint("transparent").is_err());
+    }
+
+    #[test]
+    fn colour_from_takes_carcols_and_a_combination() {
+        assert_eq!(parse_colour_from("carcols"), Ok(ColourFrom { combination: 0 }));
+        assert_eq!(parse_colour_from("CarCols:3"), Ok(ColourFrom { combination: 3 }));
+        assert!(parse_colour_from("carvariations").is_err());
+        assert!(parse_colour_from("carcols:x").is_err());
+    }
+
+    #[test]
+    fn parts_follow_the_flags() {
+        let base = || ScreenshotArgs {
+            archive: None, file: None, ped: None, component: vec![], vehicle: None, hi: false, livery: None, colour_from: None,
+            output: None, ytd: vec![], views: vec![], size: (1, 1), grid: false, lod: LodLevel::High, format: ImageFormat::Png,
+            background: [0; 4], cull: false, vertex_colors: false, entry: None, paint: None, no_index: false, no_cluster_framing: false,
+        };
+        assert_eq!(parts_needed(&base()), Parts::TEXTURES);
+        assert_eq!(parts_needed(&ScreenshotArgs { hi: true, ..base() }), Parts::TEXTURES | Parts::MODELS);
+        assert_eq!(parts_needed(&ScreenshotArgs { livery: Some(1), ..base() }), Parts::TEXTURES | Parts::VEHICLES);
+        assert_eq!(parts_needed(&ScreenshotArgs { vehicle: Some("police".into()), ..base() }), Parts::TEXTURES | Parts::MODELS | Parts::VEHICLES);
+        assert_eq!(parts_needed(&ScreenshotArgs { ped: Some("x".into()), hi: true, ..base() }), Parts::TEXTURES | Parts::PEDS);
     }
 
     #[test]

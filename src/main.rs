@@ -10,6 +10,8 @@ mod index;
 mod extents;
 mod lodlights;
 mod keys;
+mod peds;
+mod vehicles;
 mod paths;
 mod plot_inputs;
 mod props;

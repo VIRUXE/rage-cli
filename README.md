@@ -202,6 +202,8 @@ debug logging, `--no-update-check` to skip the daily release check.
 | Command | Does |
 |---|---|
 | `screenshot <archive> <file> [--views ...] [--grid] [--ytd NAME]... [--paint #rrggbb] [--background ...] [--size WxH] [--lod ...] [--entry ...]` | render a `.ydr`/`.ydd`/`.yft` from up to six fixed angles, textures resolved from the file, `--ytd` and the index |
+| `screenshot --vehicle NAME [--hi] [--livery N] [--colour-from carcols[:C]]` (also with `<archive> <file>`) | a vehicle by name through the index: its high-detail model, one of its liveries, its paint from carcols and carvariations |
+| `screenshot --ped NAME [--component SLOT=D[:T[:A]]]...` | a ped composed from its variation info: the 12 component slots' default drawables and textures, or the ones named |
 | `plot <input>... [--ymap\|--ytyp\|--ybn\|--ydr FILE]... [--layers ...] [--floor-z Z\|--z-range LO,HI] [--region ...] [--scale PX] [--marker x,y,label]... [--labels] [--props N\|--no-props] [--title T] [--quality Q] -o FILE` | a top-down plan of an interior — rooms, portals, props, collision, drawable shell, navmesh and path nodes — or of an exterior map, its entities drawn with their models — as PNG, JPG, WebP or SVG |
 
 ### Navmeshes
@@ -401,6 +403,55 @@ rage screenshot ./nested/levels/gta5/vehicles.rpf adder.yft --views front,left,i
 A model that is really several pieces scattered far apart (a prop set, a
 building with its distant LOD) is framed on the piece with the bulk of the
 geometry; `--no-cluster-framing` frames everything.
+
+### Vehicle variants
+
+`--vehicle NAME` finds a vehicle through the index instead of an archive
+path, and the variant flags work with either form. `--hi` takes the
+high-detail `NAME_hi.yft` when the game has one, as CodeWalker's vehicle
+viewer does (falling back to the base model with a warning). `--livery N`
+shows livery `N`, counted from 0 as the game counts them: every `*_sign_1`
+texture the model references is read from `*_sign_<N+1>` instead, which is
+how the game applies liveries — `police.yft` names `policenew_sign_1` and
+`police.ytd` carries `policenew_sign_1` to `_6`. `--colour-from carcols`
+paints the vehicle with the primary colour of its first spawn colour
+combination in carvariations, looked up in carcols' colour list
+(`carcols:C` picks combination `C`), and prints the colour's name:
+
+```sh
+rage screenshot --vehicle police --hi --livery 2 --colour-from carcols --views front,left,iso --grid
+```
+
+![Police car high-detail, livery 2, painted from carcols](docs/images/screenshot-police-hi-livery-grid.jpg)
+
+A livery the model's carvariations entry does not allow, or whose texture
+the dictionaries do not hold, is reported and the model is rendered anyway.
+Mod kits, secondary and pearlescent colours, plates and window tint are not
+applied.
+
+### Peds
+
+`--ped NAME` composes a ped the way CodeWalker's ped viewer does: its
+`.ymt` variation info names, for each of the 12 component slots (`head`,
+`berd`, `hair`, `uppr`, `lowr`, `hand`, `feet`, `teef`, `accs`, `task`,
+`decl`, `jbib`), a drawable in the ped's `.ydd` (`uppr_000_r`) and a
+texture in its `.ytd` (`uppr_diff_000_a_whi`), or the streamed
+per-component files in the ped's own folder; the texture replaces the
+drawable's diffuse when it is drawn. Every slot takes its first drawable
+and texture unless `--component` says otherwise: `SLOT=D[:T[:A]]` picks
+drawable `D`, texture `T` and alternative `A`, `SLOT=none` leaves the slot
+out. One line per slot says what was shown:
+
+```sh
+rage screenshot --ped a_m_y_acult_01 --views front,left,iso --grid
+rage screenshot --ped a_m_y_acult_01 --component uppr=1:1 --component hair=none
+```
+
+![A cult member composed from his variations](docs/images/screenshot-ped-acult-grid.jpg)
+
+Props (hats, glasses), cloth and expressions are not drawn. Peds are
+modelled facing the other way from vehicles, so they are turned to face
+the `front` view.
 
 ### Transparent backgrounds and translucent materials
 
@@ -1047,14 +1098,16 @@ once is enough.
 
 ### The game index
 
-The index lives under `~/.rage-cli/index/<game build>/` in three files, one
+The index lives under `~/.rage-cli/index/<game build>/` in five files, one
 per part, and each command loads only the part it uses:
 
 | Part | Holds | Used by |
 |---|---|---|
 | `textures.bin` | texture dictionaries by name, each archetype's dictionary, the parent chain, the resident dictionaries' textures | `screenshot` |
 | `interiors.bin` | which `.ytyp` declares each interior, the `.ymap`s that place it, collision files by name | `plot <interior name>` |
-| `models.bin` | model files by name, each archetype's box, model file and `.ytyp` | `plot` props, `navmesh build --game-props`, `resource build` extents, `manifest generate` |
+| `models.bin` | model files by name, each archetype's box, model file and `.ytyp` | `plot` props, `navmesh build --game-props`, `resource build` extents, `manifest generate`, `screenshot --vehicle`/`--hi` |
+| `peds.bin` | every ped `peds.ymt`/`peds.meta` lists, and where each one's `.ymt`, `.ydd`, `.ytd`, `.yft` and streamed component files are | `screenshot --ped` |
+| `vehicles.bin` | every vehicle `vehicles.meta` lists, carcols' colour list and mod kits, each model's carvariations colour combinations and liveries | `screenshot --vehicle`, `--livery`, `--colour-from` |
 
 A missing part is built on first use. A part written for other archives,
 after a game update or a mod, is rebuilt on the next use without being asked.

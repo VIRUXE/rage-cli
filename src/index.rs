@@ -53,7 +53,11 @@ impl Parts {
     /// `drawable_by_name`, `archetype_box`, `archetype_lod_dist`, `archetype_asset`,
     /// `archetype_ytyp`, `ytyp_names`.
     pub const MODELS: Parts = Parts(4);
-    pub const ALL: Parts = Parts(7);
+    /// `ped_init`, `ped_files`.
+    pub const PEDS: Parts = Parts(8);
+    /// `vehicle_init`, `car_colors`, `car_variations`, `car_kits`.
+    pub const VEHICLES: Parts = Parts(16);
+    pub const ALL: Parts = Parts(31);
 
     pub fn contains(self, other: Parts) -> bool {
         other.0 != 0 && self.0 & other.0 == other.0
@@ -65,7 +69,7 @@ impl Parts {
 
     /// Each single part in `self`, in a fixed order.
     pub fn each(self) -> impl Iterator<Item = Parts> {
-        [Parts::TEXTURES, Parts::INTERIORS, Parts::MODELS].into_iter().filter(move |p| self.contains(*p))
+        [Parts::TEXTURES, Parts::INTERIORS, Parts::MODELS, Parts::PEDS, Parts::VEHICLES].into_iter().filter(move |p| self.contains(*p))
     }
 
     pub fn name(self) -> &'static str {
@@ -73,6 +77,8 @@ impl Parts {
             Parts::TEXTURES => "textures",
             Parts::INTERIORS => "interiors",
             Parts::MODELS => "models",
+            Parts::PEDS => "peds",
+            Parts::VEHICLES => "vehicles",
             _ => "index",
         }
     }
@@ -162,6 +168,123 @@ pub struct GameIndex {
     /// win. How an archetype's full definition (its extensions, say) is
     /// read once `archetype_ytyp` has named its file.
     pub ytyp_by_name: HashMap<u32, EntryLoc>,
+    /// Ped name hash -> its `peds.ymt`/`peds.meta` entry; later files win
+    /// (CodeWalker's `InitPeds`: `allPeds[hash] = initData`).
+    pub ped_init: HashMap<u32, PedIndexEntry>,
+    /// Ped name hash -> the files that make it up: the `.ymt` with its
+    /// variations and the `.ydd`/`.ytd`/`.yft` of the same name beside it,
+    /// plus the per-component files of a streamed ped's own folder
+    /// (`GameFileCache.addPedDicts`). Only peds `ped_init` knows are kept.
+    pub ped_files: HashMap<u32, PedFiles>,
+    /// Vehicle model name hash -> its `vehicles.meta` entry; later files win
+    /// (`InitVehicles`: `allVehicles[hash] = initData`).
+    pub vehicle_init: HashMap<u32, VehicleIndexEntry>,
+    /// The paint list carvariations indexes into: the `Colors` of the last
+    /// `carcols.ymt`/`carcols.meta` in load order that lists any (a DLC's
+    /// carcols adds kits and lights but leaves `Colors` empty).
+    pub car_colors: Vec<CarColorEntry>,
+    /// Vehicle model name hash -> its carvariations entry; later files win
+    /// (`allCarVariationsDict[hash] = variation`).
+    pub car_variations: HashMap<u32, VariationEntry>,
+    /// Mod kit name hash -> the kit, from every carcols file; later wins.
+    pub car_kits: HashMap<u32, KitEntry>,
+}
+
+/// What the index keeps of a `peds.ymt`/`peds.meta` entry.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PedIndexEntry {
+    /// The name as the file spells it (`A_M_Y_Acult_01`).
+    pub name: String,
+    pub props_name: String,
+    pub clip_dictionary_name: String,
+    pub is_streamed_gfx: bool,
+}
+
+/// Where a ped's files live. A field is `None` until some archive supplies
+/// it; a later archive's file replaces an earlier one field by field, so a
+/// DLC pack that ships only a new `.ytd` keeps the base `.ydd`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PedFiles {
+    pub ymt: Option<EntryLoc>,
+    pub ydd: Option<EntryLoc>,
+    pub ytd: Option<EntryLoc>,
+    pub yft: Option<EntryLoc>,
+    /// `joaat(lowercase stem)` of each `.ydd`/`.ytd`/`.yld` in the folder
+    /// named after the ped (a streamed ped's components, one file each) ->
+    /// where it lives. Later archives win per file.
+    pub streamed: Vec<(u32, EntryLoc)>,
+}
+
+impl PedFiles {
+    fn merge(&mut self, later: PedFiles) {
+        if later.ymt.is_some() { self.ymt = later.ymt; }
+        if later.ydd.is_some() { self.ydd = later.ydd; }
+        if later.ytd.is_some() { self.ytd = later.ytd; }
+        if later.yft.is_some() { self.yft = later.yft; }
+        for (hash, loc) in later.streamed {
+            self.streamed.retain(|(h, _)| *h != hash);
+            self.streamed.push((hash, loc));
+        }
+    }
+
+    /// The streamed file named `hash`, if the ped's folder holds one.
+    pub fn streamed_file(&self, hash: u32) -> Option<&EntryLoc> {
+        self.streamed.iter().find(|(h, _)| *h == hash).map(|(_, loc)| loc)
+    }
+}
+
+/// What the index keeps of a `vehicles.meta` entry.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct VehicleIndexEntry {
+    /// The name as the file spells it.
+    pub model_name: String,
+    pub txd_name: String,
+    pub game_name: String,
+    pub vehicle_make_name: String,
+    pub vehicle_type: String,
+    pub vehicle_class: String,
+}
+
+/// One carcols paint: `0xAARRGGBB`, its name and metallic setting.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CarColorEntry {
+    pub color: u32,
+    pub name: String,
+    pub metallic_id: i32,
+}
+
+impl CarColorEntry {
+    pub fn rgb(&self) -> [u8; 3] {
+        [(self.color >> 16) as u8, (self.color >> 8) as u8, self.color as u8]
+    }
+}
+
+/// What the index keeps of a carvariations entry: each colour combination
+/// (carcols indices, and which liveries it allows) and the kit names.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct VariationEntry {
+    pub colors: Vec<(Vec<u8>, Vec<bool>)>,
+    pub kits: Vec<u32>,
+}
+
+impl VariationEntry {
+    /// Whether livery `index` (0-based) is allowed by any combination.
+    pub fn allows_livery(&self, index: usize) -> bool {
+        self.colors.iter().any(|(_, liveries)| liveries.get(index).copied().unwrap_or(false))
+    }
+
+    /// How many liveries the combinations describe.
+    pub fn livery_count(&self) -> usize {
+        self.colors.iter().map(|(_, l)| l.len()).max().unwrap_or(0)
+    }
+}
+
+/// What the index keeps of a carcols mod kit.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct KitEntry {
+    pub id: u16,
+    pub livery_names: Vec<u32>,
+    pub livery2_names: Vec<u32>,
 }
 
 const RESIDENT_DICTS: [&str; 2] = ["mapdetail", "vehshare"];
@@ -170,6 +293,12 @@ const RESIDENT_DICTS: [&str; 2] = ["mapdetail", "vehshare"];
 /// (`entry.NameLower == "..."`), not as a suffix — a filename like
 /// `dlc_gtxd.ymt` is deliberately not picked up, matching the reference.
 const TXD_RELATIONSHIP_FILES: [&str; 4] = ["gtxd.ymt", "gtxd.meta", "mph4_gtxd.ymt", "vehicles.meta"];
+
+/// The vehicle and ped metadata files, matched by exact name as
+/// `GameFileCache.InitVehicles`/`InitPeds` do (`entry.NameLower == "..."`).
+const PEDS_META_FILES: [&str; 2] = ["peds.ymt", "peds.meta"];
+const CARCOLS_FILES: [&str; 2] = ["carcols.ymt", "carcols.meta"];
+const CARVARIATIONS_FILES: [&str; 2] = ["carvariations.ymt", "carvariations.meta"];
 
 /// What one top-level archive contributes to a build: its share of the
 /// index, plus what the interior pass needs once every archive is in.
@@ -233,6 +362,12 @@ impl GameIndex {
         if parts.contains(Parts::INTERIORS) {
             index.mlo_instances = interior_placements(&ymaps, &covered, &proxies, keys);
         }
+        if parts.contains(Parts::PEDS) {
+            // Only a `.ymt` whose name `peds.ymt`/`peds.meta` lists is a
+            // ped's (`InitPeds`: `allPeds.ContainsKey(testhash)`).
+            let known = &index.ped_init;
+            index.ped_files.retain(|hash, _| known.contains_key(hash));
+        }
         index.parts = parts;
         Ok(index)
     }
@@ -260,6 +395,16 @@ impl GameIndex {
         self.archetype_ytyp.extend(later.archetype_ytyp);
         self.ytyp_names.extend(later.ytyp_names);
         self.ytyp_by_name.extend(later.ytyp_by_name);
+        self.ped_init.extend(later.ped_init);
+        for (hash, files) in later.ped_files {
+            self.ped_files.entry(hash).or_default().merge(files);
+        }
+        self.vehicle_init.extend(later.vehicle_init);
+        if !later.car_colors.is_empty() {
+            self.car_colors = later.car_colors;
+        }
+        self.car_variations.extend(later.car_variations);
+        self.car_kits.extend(later.car_kits);
     }
 
     /// Reads the raw bytes of an already-located entry, descending through
@@ -381,6 +526,12 @@ impl GameIndex {
             interior_placements: self.mlo_instances.values().map(|v| v.len()).sum(),
             collision_files: self.ybn_by_name.len(),
             drawables: self.drawable_by_name.len(),
+            peds: self.ped_init.len(),
+            ped_files: self.ped_files.len(),
+            vehicles: self.vehicle_init.len(),
+            car_colors: self.car_colors.len(),
+            car_variations: self.car_variations.len(),
+            car_kits: self.car_kits.len(),
         }
     }
 
@@ -402,6 +553,12 @@ impl GameIndex {
         }
         if self.parts.contains(Parts::MODELS) {
             out.push(format!("{} drawables, {} archetype boxes", s.drawables, self.archetype_box.len()));
+        }
+        if self.parts.contains(Parts::PEDS) {
+            out.push(format!("{} peds, {} with files", s.peds, s.ped_files));
+        }
+        if self.parts.contains(Parts::VEHICLES) {
+            out.push(format!("{} vehicles, {} paints, {} variations, {} kits", s.vehicles, s.car_colors, s.car_variations, s.car_kits));
         }
         out.join(", ")
     }
@@ -643,6 +800,12 @@ pub struct IndexStats {
     pub collision_files: usize,
     /// `.ydr`/`.ydd`/`.yft` files by name.
     pub drawables: usize,
+    pub peds: usize,
+    pub ped_files: usize,
+    pub vehicles: usize,
+    pub car_colors: usize,
+    pub car_variations: usize,
+    pub car_kits: usize,
 }
 
 /// Every .rpf under `game_root` in the game's load order: base archives,
@@ -783,6 +946,16 @@ fn index_archive(archive: &Archive, archive_path: &Path, nested_rpfs: &[String],
     let textures = parts.contains(Parts::TEXTURES);
     let interiors = parts.contains(Parts::INTERIORS);
     let models = parts.contains(Parts::MODELS);
+    let peds = parts.contains(Parts::PEDS);
+    let vehicles = parts.contains(Parts::VEHICLES);
+
+    // A ped's files sit together in one archive: `<ped>.ymt` beside
+    // `<ped>.ydd/.ytd/.yft`, or with a `<ped>/` folder of per-component
+    // files (`GameFileCache.addPedDicts` looks in the `.ymt`'s own
+    // directory). Every `.ymt` is a candidate here; `GameIndex::build` keeps
+    // the ones `peds.ymt` names.
+    let mut ped_candidates: HashMap<u32, PedFiles> = HashMap::new();
+    let mut folder_files: Vec<(u32, u32, EntryLoc)> = Vec::new();
 
     for file in archive.list_files() {
         let name_lower = file.name.to_lowercase();
@@ -796,13 +969,54 @@ fn index_archive(archive: &Archive, archive_path: &Path, nested_rpfs: &[String],
         }
 
         if TXD_RELATIONSHIP_FILES.contains(&name_lower.as_str()) {
-            if textures {
+            let wanted_by_vehicles = vehicles && name_lower == "vehicles.meta";
+            if textures || wanted_by_vehicles {
                 match archive.extract(file, keys) {
-                    Ok(data) => match parse_txd_relationships(&data) {
-                        Ok(rels) => merge_txd_relationships(&mut out.index.parent_txds, &rels),
-                        Err(err) => log::debug!("index: failed to parse '{}': {err}", file.path),
-                    },
+                    Ok(data) => {
+                        if textures {
+                            match parse_txd_relationships(&data) {
+                                Ok(rels) => merge_txd_relationships(&mut out.index.parent_txds, &rels),
+                                Err(err) => log::debug!("index: failed to parse '{}': {err}", file.path),
+                            }
+                        }
+                        if wanted_by_vehicles {
+                            match rage_formats::parse_vehicles_meta(&data) {
+                                Ok(meta) => record_vehicles(&mut out.index.vehicle_init, &meta),
+                                Err(err) => log::debug!("index: failed to parse '{}': {err}", file.path),
+                            }
+                        }
+                    }
                     Err(err) => log::debug!("index: failed to extract '{}': {err}", file.path),
+                }
+            }
+            continue;
+        }
+
+        if PEDS_META_FILES.contains(&name_lower.as_str()) {
+            if peds {
+                match archive.extract(file, keys).and_then(|data| rage_formats::parse_peds_meta(&data).map_err(Into::into)) {
+                    Ok(meta) => record_peds(&mut out.index.ped_init, &meta),
+                    Err(err) => log::debug!("index: failed to read '{}': {err}", file.path),
+                }
+            }
+            continue;
+        }
+
+        if CARCOLS_FILES.contains(&name_lower.as_str()) {
+            if vehicles {
+                match archive.extract(file, keys).and_then(|data| rage_formats::parse_carcols(&data).map_err(Into::into)) {
+                    Ok(carcols) => record_carcols(&mut out.index, &carcols),
+                    Err(err) => log::debug!("index: failed to read '{}': {err}", file.path),
+                }
+            }
+            continue;
+        }
+
+        if CARVARIATIONS_FILES.contains(&name_lower.as_str()) {
+            if vehicles {
+                match archive.extract(file, keys).and_then(|data| rage_formats::parse_carvariations(&data).map_err(Into::into)) {
+                    Ok(variations) => record_carvariations(&mut out.index.car_variations, &variations),
+                    Err(err) => log::debug!("index: failed to read '{}': {err}", file.path),
                 }
             }
             continue;
@@ -888,11 +1102,132 @@ fn index_archive(archive: &Archive, archive_path: &Path, nested_rpfs: &[String],
             if models {
                 out.index.drawable_by_name.insert(rage_joaat(&stem), loc());
             }
+            if peds && !name_lower.ends_with(".ydr") {
+                let entry = ped_candidates.entry(rage_joaat(&stem)).or_default();
+                if name_lower.ends_with(".ydd") {
+                    entry.ydd = Some(loc());
+                } else {
+                    entry.yft = Some(loc());
+                }
+                if let Some(folder) = folder_of(&file.path) {
+                    folder_files.push((rage_joaat(&folder), rage_joaat(&stem), loc()));
+                }
+            }
         } else if name_lower.ends_with(".ymap") && interiors {
             // Where it is, for now: whether it is read at all is decided
             // once every cache_y.dat is in (`interior_placements`).
             out.ymaps.push((rage_joaat(&stem), loc()));
+        } else if name_lower.ends_with(".ymt") && peds {
+            ped_candidates.entry(rage_joaat(&stem)).or_default().ymt = Some(loc());
+        } else if name_lower.ends_with(".yld") && peds {
+            if let Some(folder) = folder_of(&file.path) {
+                folder_files.push((rage_joaat(&folder), rage_joaat(&stem), loc()));
+            }
         }
+
+        if peds && name_lower.ends_with(".ytd") {
+            ped_candidates.entry(rage_joaat(&stem)).or_default().ytd = Some(loc());
+            if let Some(folder) = folder_of(&file.path) {
+                folder_files.push((rage_joaat(&folder), rage_joaat(&stem), loc()));
+            }
+        }
+    }
+
+    if peds {
+        // A ped is a `.ymt`; its dictionaries share its stem and its folder
+        // shares its name. Anything else collected here is dropped.
+        for (hash, mut files) in ped_candidates {
+            if files.ymt.is_none() {
+                continue;
+            }
+            for (folder_hash, file_hash, loc) in &folder_files {
+                if *folder_hash == hash {
+                    files.streamed.push((*file_hash, loc.clone()));
+                }
+            }
+            out.index.ped_files.entry(hash).or_default().merge(files);
+        }
+    }
+}
+
+/// The lowercase name of the folder holding `path` (`ig_andreas` for
+/// `ig_andreas/head_000_r.ydd`), or `None` at the archive's root.
+fn folder_of(path: &str) -> Option<String> {
+    let path = path.replace('\\', "/");
+    let (dir, _) = path.rsplit_once('/')?;
+    let folder = dir.rsplit('/').next().unwrap_or(dir);
+    (!folder.is_empty()).then(|| folder.to_lowercase())
+}
+
+/// `InitPeds`: every ped by the hash of its lowercased name, later wins.
+fn record_peds(out: &mut HashMap<u32, PedIndexEntry>, meta: &rage_formats::PedsMeta) {
+    for ped in &meta.init_datas {
+        if ped.name.is_empty() {
+            continue;
+        }
+        out.insert(
+            rage_joaat(&ped.name.to_lowercase()),
+            PedIndexEntry {
+                name: ped.name.clone(),
+                props_name: ped.props_name.clone(),
+                clip_dictionary_name: ped.clip_dictionary_name.clone(),
+                is_streamed_gfx: ped.is_streamed_gfx,
+            },
+        );
+    }
+}
+
+/// `InitVehicles`: every model by the hash of its lowercased name, later wins.
+fn record_vehicles(out: &mut HashMap<u32, VehicleIndexEntry>, meta: &rage_formats::VehiclesMeta) {
+    for v in &meta.init_datas {
+        if v.model_name.is_empty() {
+            continue;
+        }
+        out.insert(
+            rage_joaat(&v.model_name.to_lowercase()),
+            VehicleIndexEntry {
+                model_name: v.model_name.clone(),
+                txd_name: v.txd_name.clone(),
+                game_name: v.game_name.clone(),
+                vehicle_make_name: v.vehicle_make_name.clone(),
+                vehicle_type: v.vehicle_type.clone(),
+                vehicle_class: v.vehicle_class.clone(),
+            },
+        );
+    }
+}
+
+/// A carcols file's colours (when it lists any) and kits.
+fn record_carcols(out: &mut GameIndex, carcols: &rage_formats::CarCols) {
+    use rage_formats::MetaEnum;
+    if !carcols.colors.is_empty() {
+        out.car_colors = carcols
+            .colors
+            .iter()
+            .map(|c| CarColorEntry { color: c.color, name: c.color_name.trim().to_string(), metallic_id: c.metallic_id.value() })
+            .collect();
+    }
+    for kit in &carcols.kits {
+        out.car_kits.insert(
+            kit.kit_name,
+            KitEntry { id: kit.id, livery_names: kit.livery_names.clone(), livery2_names: kit.livery2_names.clone() },
+        );
+    }
+}
+
+/// Every model's variations by the hash of its lowercased name, later wins.
+fn record_carvariations(out: &mut HashMap<u32, VariationEntry>, variations: &rage_formats::CarVariations) {
+    for v in &variations.variation_data {
+        if v.model_name.is_empty() {
+            continue;
+        }
+        out.insert(
+            rage_joaat(&v.model_name.to_lowercase()),
+            VariationEntry {
+                colors: v.colors.iter().map(|c| (c.indices.clone(), c.liveries.clone())).collect(),
+                kits: v.kits.clone(),
+            },
+        );
     }
 }
 
@@ -940,8 +1275,9 @@ const MAGIC: u32 = 0x5850_4652; // "RPFX" little-endian
 // 6: every placement ymap is kept. 7: drawable locations and archetype
 // asset bindings.
 // 8: one file per part, each carrying the archives' fingerprint; entries
-// written in key order. 9: archetype LOD distances.
-const FORMAT_VERSION: u32 = 11;
+// written in key order. 9: archetype LOD distances. 10-11: archetype ytyp
+// bindings and ytyp locations. 12: the peds and vehicles parts.
+const FORMAT_VERSION: u32 = 12;
 
 fn write_u32(buf: &mut Vec<u8>, v: u32) {
     buf.extend_from_slice(&v.to_le_bytes());
@@ -973,6 +1309,23 @@ fn write_locs(buf: &mut Vec<u8>, map: &HashMap<u32, EntryLoc>) {
     for (hash, loc) in sorted(map) {
         write_u32(buf, hash);
         write_loc(buf, loc);
+    }
+}
+
+fn write_opt_loc(buf: &mut Vec<u8>, loc: Option<&EntryLoc>) {
+    match loc {
+        Some(loc) => {
+            write_u32(buf, 1);
+            write_loc(buf, loc);
+        }
+        None => write_u32(buf, 0),
+    }
+}
+
+fn write_hashes(buf: &mut Vec<u8>, hashes: &[u32]) {
+    write_u32(buf, hashes.len() as u32);
+    for h in hashes {
+        write_u32(buf, *h);
     }
 }
 
@@ -1038,6 +1391,62 @@ fn encode_part(index: &GameIndex, part: Parts, fingerprint: u64) -> Vec<u8> {
             }
             write_locs(&mut buf, &index.ytyp_by_name);
         }
+        Parts::PEDS => {
+            write_u32(&mut buf, index.ped_init.len() as u32);
+            for (hash, ped) in sorted(&index.ped_init) {
+                write_u32(&mut buf, hash);
+                write_str(&mut buf, &ped.name);
+                write_str(&mut buf, &ped.props_name);
+                write_str(&mut buf, &ped.clip_dictionary_name);
+                write_u32(&mut buf, u32::from(ped.is_streamed_gfx));
+            }
+            write_u32(&mut buf, index.ped_files.len() as u32);
+            for (hash, files) in sorted(&index.ped_files) {
+                write_u32(&mut buf, hash);
+                for loc in [&files.ymt, &files.ydd, &files.ytd, &files.yft] {
+                    write_opt_loc(&mut buf, loc.as_ref());
+                }
+                write_u32(&mut buf, files.streamed.len() as u32);
+                for (file_hash, loc) in &files.streamed {
+                    write_u32(&mut buf, *file_hash);
+                    write_loc(&mut buf, loc);
+                }
+            }
+        }
+        Parts::VEHICLES => {
+            write_u32(&mut buf, index.vehicle_init.len() as u32);
+            for (hash, v) in sorted(&index.vehicle_init) {
+                write_u32(&mut buf, hash);
+                for s in [&v.model_name, &v.txd_name, &v.game_name, &v.vehicle_make_name, &v.vehicle_type, &v.vehicle_class] {
+                    write_str(&mut buf, s);
+                }
+            }
+            write_u32(&mut buf, index.car_colors.len() as u32);
+            for c in &index.car_colors {
+                write_u32(&mut buf, c.color);
+                write_str(&mut buf, &c.name);
+                write_u32(&mut buf, c.metallic_id as u32);
+            }
+            write_u32(&mut buf, index.car_variations.len() as u32);
+            for (hash, v) in sorted(&index.car_variations) {
+                write_u32(&mut buf, hash);
+                write_u32(&mut buf, v.colors.len() as u32);
+                for (indices, liveries) in &v.colors {
+                    write_u32(&mut buf, indices.len() as u32);
+                    buf.extend_from_slice(indices);
+                    write_u32(&mut buf, liveries.len() as u32);
+                    buf.extend(liveries.iter().map(|l| u8::from(*l)));
+                }
+                write_hashes(&mut buf, &v.kits);
+            }
+            write_u32(&mut buf, index.car_kits.len() as u32);
+            for (hash, kit) in sorted(&index.car_kits) {
+                write_u32(&mut buf, hash);
+                write_u32(&mut buf, u32::from(kit.id));
+                write_hashes(&mut buf, &kit.livery_names);
+                write_hashes(&mut buf, &kit.livery2_names);
+            }
+        }
         _ => unreachable!("encode_part takes a single part"),
     }
     buf
@@ -1070,6 +1479,13 @@ impl<'a> Cursor<'a> {
         String::from_utf8(bytes.to_vec()).context("index: invalid UTF-8")
     }
 
+    fn bytes(&mut self) -> Result<Vec<u8>> {
+        let len = self.u32()? as usize;
+        let bytes = self.data.get(self.pos..self.pos + len).context("index: truncated (bytes)")?;
+        self.pos += len;
+        Ok(bytes.to_vec())
+    }
+
     /// A count read from the file, which may be truncated or garbled:
     /// capped for preallocation so the reads that follow fail with
     /// "truncated" rather than aborting on a huge allocation.
@@ -1088,6 +1504,19 @@ fn read_loc(c: &mut Cursor) -> Result<EntryLoc> {
     }
     let inner_path = c.string()?;
     Ok(EntryLoc { top_archive, nested_rpfs, inner_path })
+}
+
+fn read_opt_loc(c: &mut Cursor) -> Result<Option<EntryLoc>> {
+    Ok(if c.u32()? != 0 { Some(read_loc(c)?) } else { None })
+}
+
+fn read_hashes(c: &mut Cursor) -> Result<Vec<u32>> {
+    let (n, cap) = c.count()?;
+    let mut out = Vec::with_capacity(cap);
+    for _ in 0..n {
+        out.push(c.u32()?);
+    }
+    Ok(out)
 }
 
 fn read_locs(c: &mut Cursor) -> Result<HashMap<u32, EntryLoc>> {
@@ -1186,6 +1615,81 @@ fn decode_part(data: &[u8], part: Parts) -> Result<(u64, GameIndex)> {
             }
             index.ytyp_by_name = read_locs(&mut c)?;
         }
+        Parts::PEDS => {
+            let (n, cap) = c.count()?;
+            index.ped_init.reserve(cap);
+            for _ in 0..n {
+                let hash = c.u32()?;
+                let name = c.string()?;
+                let props_name = c.string()?;
+                let clip_dictionary_name = c.string()?;
+                let is_streamed_gfx = c.u32()? != 0;
+                index.ped_init.insert(hash, PedIndexEntry { name, props_name, clip_dictionary_name, is_streamed_gfx });
+            }
+            let (n, cap) = c.count()?;
+            index.ped_files.reserve(cap);
+            for _ in 0..n {
+                let hash = c.u32()?;
+                let ymt = read_opt_loc(&mut c)?;
+                let ydd = read_opt_loc(&mut c)?;
+                let ytd = read_opt_loc(&mut c)?;
+                let yft = read_opt_loc(&mut c)?;
+                let (count, cap) = c.count()?;
+                let mut streamed = Vec::with_capacity(cap.min(4096));
+                for _ in 0..count {
+                    let file_hash = c.u32()?;
+                    streamed.push((file_hash, read_loc(&mut c)?));
+                }
+                index.ped_files.insert(hash, PedFiles { ymt, ydd, ytd, yft, streamed });
+            }
+        }
+        Parts::VEHICLES => {
+            let (n, cap) = c.count()?;
+            index.vehicle_init.reserve(cap);
+            for _ in 0..n {
+                let hash = c.u32()?;
+                let entry = VehicleIndexEntry {
+                    model_name: c.string()?,
+                    txd_name: c.string()?,
+                    game_name: c.string()?,
+                    vehicle_make_name: c.string()?,
+                    vehicle_type: c.string()?,
+                    vehicle_class: c.string()?,
+                };
+                index.vehicle_init.insert(hash, entry);
+            }
+            let (n, cap) = c.count()?;
+            index.car_colors.reserve(cap);
+            for _ in 0..n {
+                let color = c.u32()?;
+                let name = c.string()?;
+                let metallic_id = c.u32()? as i32;
+                index.car_colors.push(CarColorEntry { color, name, metallic_id });
+            }
+            let (n, cap) = c.count()?;
+            index.car_variations.reserve(cap);
+            for _ in 0..n {
+                let hash = c.u32()?;
+                let (combos, combos_cap) = c.count()?;
+                let mut colors = Vec::with_capacity(combos_cap.min(256));
+                for _ in 0..combos {
+                    let indices = c.bytes()?;
+                    let liveries = c.bytes()?.into_iter().map(|b| b != 0).collect();
+                    colors.push((indices, liveries));
+                }
+                let kits = read_hashes(&mut c)?;
+                index.car_variations.insert(hash, VariationEntry { colors, kits });
+            }
+            let (n, cap) = c.count()?;
+            index.car_kits.reserve(cap);
+            for _ in 0..n {
+                let hash = c.u32()?;
+                let id = c.u32()? as u16;
+                let livery_names = read_hashes(&mut c)?;
+                let livery2_names = read_hashes(&mut c)?;
+                index.car_kits.insert(hash, KitEntry { id, livery_names, livery2_names });
+            }
+        }
         _ => bail!("index: {} is not a single part", part.0),
     }
     if c.pos != data.len() {
@@ -1226,6 +1730,19 @@ mod tests {
         index.archetype_ytyp.insert(8, 14);
         index.ytyp_names.insert(14, "v_minimap".to_string());
         index.ytyp_by_name.insert(14, loc("v_minimap.ytyp"));
+        index.ped_init.insert(20, PedIndexEntry { name: "A_M_Y_Acult_01".into(), props_name: "A_M_Y_Acult_01_p".into(), clip_dictionary_name: "move_m@generic".into(), is_streamed_gfx: false });
+        index.ped_files.insert(20, PedFiles {
+            ymt: Some(loc("a_m_y_acult_01.ymt")),
+            ydd: Some(loc("a_m_y_acult_01.ydd")),
+            ytd: None,
+            yft: Some(loc("a_m_y_acult_01.yft")),
+            streamed: vec![(21, loc("a_m_y_acult_01/head_000_r.ydd")), (22, loc("a_m_y_acult_01/head_diff_000_a_whi.ytd"))],
+        });
+        index.vehicle_init.insert(30, VehicleIndexEntry { model_name: "police".into(), txd_name: "police".into(), game_name: "POLICE".into(), vehicle_make_name: "VAPID".into(), vehicle_type: "VEHICLE_TYPE_CAR".into(), vehicle_class: "VC_EMERGENCY".into() });
+        index.car_colors.push(CarColorEntry { color: 0xFF0D_0D0D, name: "0 Metallic Black".into(), metallic_id: 1 });
+        index.car_colors.push(CarColorEntry { color: 0xFF8B_1A13, name: "Dark Red".into(), metallic_id: -1 });
+        index.car_variations.insert(30, VariationEntry { colors: vec![(vec![111, 111, 0, 156], vec![true, false, true]), (vec![1, 2, 3, 4], vec![])], kits: vec![31, 32] });
+        index.car_kits.insert(31, KitEntry { id: 414, livery_names: vec![40, 41], livery2_names: vec![] });
         index
     }
 
@@ -1254,13 +1771,59 @@ mod tests {
         assert_eq!(back.archetype_ytyp, index.archetype_ytyp);
         assert_eq!(back.ytyp_names, index.ytyp_names);
         assert_eq!(back.ytyp_by_name, index.ytyp_by_name);
+        assert_eq!(back.ped_init, index.ped_init);
+        assert_eq!(back.ped_files, index.ped_files);
+        assert_eq!(back.vehicle_init, index.vehicle_init);
+        assert_eq!(back.car_colors, index.car_colors);
+        assert_eq!(back.car_variations, index.car_variations);
+        assert_eq!(back.car_kits, index.car_kits);
+    }
+
+    /// A later archive's ped files replace an earlier one's field by field,
+    /// and its colour list only when it has one.
+    #[test]
+    fn ped_files_and_paints_merge_like_the_game_loads_them() {
+        let mut base = GameIndex::default();
+        base.ped_files.insert(20, PedFiles { ymt: Some(loc("base.ymt")), ydd: Some(loc("base.ydd")), ytd: Some(loc("base.ytd")), yft: None, streamed: vec![(1, loc("base/a.ydd")), (2, loc("base/b.ydd"))] });
+        base.car_colors.push(CarColorEntry { color: 1, name: "one".into(), metallic_id: 0 });
+        let mut dlc = GameIndex::default();
+        dlc.ped_files.insert(20, PedFiles { ymt: None, ydd: None, ytd: Some(loc("dlc.ytd")), yft: Some(loc("dlc.yft")), streamed: vec![(2, loc("dlc/b.ydd"))] });
+        base.merge(dlc);
+        let files = &base.ped_files[&20];
+        assert_eq!(files.ymt, Some(loc("base.ymt")));
+        assert_eq!(files.ydd, Some(loc("base.ydd")));
+        assert_eq!(files.ytd, Some(loc("dlc.ytd")));
+        assert_eq!(files.yft, Some(loc("dlc.yft")));
+        assert_eq!(files.streamed_file(1), Some(&loc("base/a.ydd")));
+        assert_eq!(files.streamed_file(2), Some(&loc("dlc/b.ydd")));
+        assert_eq!(base.car_colors.len(), 1, "an empty colour list does not replace the base one");
+        let mut update = GameIndex::default();
+        update.car_colors.push(CarColorEntry { color: 2, name: "two".into(), metallic_id: 0 });
+        base.merge(update);
+        assert_eq!(base.car_colors[0].name, "two");
+    }
+
+    #[test]
+    fn folder_names_come_from_the_path() {
+        assert_eq!(folder_of("ig_andreas/head_000_r.ydd").as_deref(), Some("ig_andreas"));
+        assert_eq!(folder_of("x64/models/IG_Andreas\\head_000_r.ydd").as_deref(), Some("ig_andreas"));
+        assert_eq!(folder_of("ig_andreas.ymt"), None);
+        assert_eq!(folder_of("/ig_andreas.ymt"), None);
+    }
+
+    #[test]
+    fn variation_liveries_are_any_combination_allowing_them() {
+        let v = VariationEntry { colors: vec![(vec![0], vec![false, false]), (vec![1], vec![false, true, true])], kits: vec![] };
+        assert!(!v.allows_livery(0) && v.allows_livery(1) && v.allows_livery(2) && !v.allows_livery(3));
+        assert_eq!(v.livery_count(), 3);
+        assert_eq!(CarColorEntry { color: 0xFF8B_1A13, name: String::new(), metallic_id: 0 }.rgb(), [0x8B, 0x1A, 0x13]);
     }
 
     #[test]
     fn a_part_file_holds_only_its_own_maps() {
         let (_, textures) = decode_part(&encode_part(&sample(), Parts::TEXTURES, 0), Parts::TEXTURES).unwrap();
         assert_eq!(textures.ytd_by_name.len(), 1);
-        assert!(textures.mlo_ytyp.is_empty() && textures.drawable_by_name.is_empty());
+        assert!(textures.mlo_ytyp.is_empty() && textures.drawable_by_name.is_empty() && textures.ped_init.is_empty() && textures.car_colors.is_empty());
     }
 
     #[test]
@@ -1376,7 +1939,8 @@ mod tests {
         assert!(p.contains(Parts::TEXTURES) && p.contains(Parts::MODELS) && !p.contains(Parts::INTERIORS));
         assert!(!p.contains(Parts::NONE));
         assert_eq!(p.describe(), "textures, models");
-        assert_eq!(Parts::ALL.each().count(), 3);
+        assert_eq!(Parts::ALL.each().count(), 5);
+        assert_eq!((Parts::PEDS | Parts::VEHICLES).describe(), "peds, vehicles");
         assert!(Parts::NONE.is_empty());
     }
 

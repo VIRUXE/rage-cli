@@ -101,7 +101,7 @@ pub fn extension_of(name: &str) -> &str {
 
 /// The drawable kind `name`'s extension says it is, or an error naming the
 /// extensions that would do.
-fn drawable_kind_of(name: &str) -> Result<DrawableKind> {
+pub fn drawable_kind_of(name: &str) -> Result<DrawableKind> {
     DrawableKind::from_extension(extension_of(name))
         .with_context(|| format!("'{}' is not a drawable (.ydr/.ydd/.yft)", name))
 }
@@ -145,12 +145,19 @@ impl Loaded {
 /// fragment comes back whole, anything else as its drawable entries.
 pub fn load_renderables(archive: &Archive, name: &str, keys: Option<&GtaKeys>) -> Result<Loaded> {
     let kind = drawable_kind_of(name)?;
+    let data = load_resource(archive, name, keys)?;
+    parse_renderables(name, kind, &data)
+}
+
+/// Parses the already-extracted bytes of `name` (a .ydr, .ydd or .yft) for
+/// rendering, as [`load_renderables`] does after extracting them.
+pub fn parse_renderables(name: &str, kind: DrawableKind, data: &[u8]) -> Result<Loaded> {
     if kind == DrawableKind::Yft {
-        let data = load_resource(archive, name, keys)?;
-        let fragment = parse_yft(&data).with_context(|| format!("failed to parse fragment '{}'", name))?;
+        let fragment = parse_yft(data).with_context(|| format!("failed to parse fragment '{}'", name))?;
         return Ok(Loaded::Fragment(fragment));
     }
-    Ok(Loaded::Entries(load_drawables(archive, name, kind, keys)?))
+    let entries = parse_drawables(data, kind).with_context(|| format!("failed to parse drawable '{}'", name))?;
+    Ok(Loaded::Entries(entries))
 }
 
 /// Normalises a `--file`-style spec into the lookup name used against an
