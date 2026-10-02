@@ -787,7 +787,8 @@ fn local_path(file: &str, archive: Option<&Path>) -> Option<PathBuf> {
     archive.is_none().then(|| PathBuf::from(file))
 }
 
-fn run_info(args: &InfoArgs, keys: Option<&GtaKeys>, verbose: bool) -> Result<()> {
+/// The text `resource info` prints: JSON when `args.json`, else the summary.
+pub fn info_text(args: &InfoArgs, keys: Option<&GtaKeys>, verbose: bool) -> Result<String> {
     let data = load_resource_bytes(&args.file, args.archive.as_deref(), keys)?;
     let container = detect(&data).with_context(|| format!("'{}'", args.file))?;
     let contents = parse_contents(&args.file, &data, &container)?;
@@ -804,7 +805,11 @@ fn run_info(args: &InfoArgs, keys: Option<&GtaKeys>, verbose: bool) -> Result<()
             out.push_str(&note);
         }
     }
-    print!("{out}");
+    Ok(out)
+}
+
+fn run_info(args: &InfoArgs, keys: Option<&GtaKeys>, verbose: bool) -> Result<()> {
+    print!("{}", info_text(args, keys, verbose)?);
     Ok(())
 }
 

@@ -126,6 +126,92 @@ pub struct ScreenshotArgs {
     /// geometry (the far pieces are always drawn either way)
     #[arg(long)]
     pub no_cluster_framing: bool,
+
+    /// Print one JSON object (schema rage-screenshot/1) instead of progress
+    /// lines: the images written per entry and view, the render summary,
+    /// missing textures, the dictionaries used, and warnings
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Where the lines a person would read go: stdout as they happen, or into
+/// the report when `--json` owns stdout. Warnings always reach stderr.
+#[derive(Default)]
+pub struct Log {
+    json: bool,
+    notes: Vec<String>,
+    warnings: Vec<String>,
+}
+
+impl Log {
+    fn say(&mut self, line: String) {
+        if self.json {
+            self.notes.push(line);
+        } else {
+            println!("{line}");
+        }
+    }
+
+    fn warn(&mut self, line: String) {
+        eprintln!("warning: {line}");
+        self.warnings.push(line);
+    }
+}
+
+/// One rendered entry of the report: its images and what the renderer said.
+#[derive(Debug, Default)]
+pub struct EntryReport {
+    pub label: String,
+    pub summary: String,
+    pub report: rage_render::RenderReport,
+    /// `(view label, path)` per image written.
+    pub images: Vec<(String, PathBuf)>,
+    pub grid: Option<PathBuf>,
+}
+
+/// What a `screenshot` run produced; `--json` prints it, `rage mcp` returns it.
+#[derive(Debug, Default)]
+pub struct Report {
+    pub output_dir: PathBuf,
+    pub format: String,
+    pub entries: Vec<EntryReport>,
+    pub notes: Vec<String>,
+    pub warnings: Vec<String>,
+}
+
+impl Report {
+    pub fn json(&self) -> json::JsonValue {
+        let entries: Vec<json::JsonValue> = self
+            .entries
+            .iter()
+            .map(|e| {
+                let images: Vec<json::JsonValue> =
+                    e.images.iter().map(|(v, p)| json::object! { view: v.clone(), path: p.to_string_lossy().to_string() }).collect();
+                json::object! {
+                    label: e.label.clone(),
+                    summary: e.summary.clone(),
+                    triangles: e.report.triangles,
+                    geometries: e.report.geometries,
+                    untextured_geometries: e.report.untextured_geometries,
+                    geometries_without_diffuse: e.report.geometries_without_diffuse,
+                    lod: e.report.lod.map(|l| l.to_string()),
+                    bounds_computed: e.report.bounds_computed,
+                    missing_textures: e.report.missing_textures.clone(),
+                    images: images,
+                    grid: e.grid.as_ref().map(|p| p.to_string_lossy().to_string()),
+                }
+            })
+            .collect();
+        json::object! {
+            schema: "rage-screenshot/1",
+            output_dir: self.output_dir.to_string_lossy().to_string(),
+            format: self.format.clone(),
+            images: self.entries.iter().map(|e| e.images.len() + usize::from(e.grid.is_some())).sum::<usize>(),
+            entries: entries,
+            notes: self.notes.clone(),
+            warnings: self.warnings.clone(),
+        }
+    }
 }
 
 /// `--colour-from carcols[:C]`.
@@ -135,7 +221,7 @@ pub struct ColourFrom {
     pub combination: usize,
 }
 
-fn parse_colour_from(value: &str) -> Result<ColourFrom, String> {
+pub(crate) fn parse_colour_from(value: &str) -> Result<ColourFrom, String> {
     let value = value.trim();
     let (source, combination) = value.split_once(':').unwrap_or((value, "0"));
     if !source.eq_ignore_ascii_case("carcols") {
@@ -146,7 +232,7 @@ fn parse_colour_from(value: &str) -> Result<ColourFrom, String> {
 }
 
 /// Parses a `#rrggbb` paint colour.
-fn parse_paint(value: &str) -> Result<[u8; 3], String> {
+pub(crate) fn parse_paint(value: &str) -> Result<[u8; 3], String> {
     let hex = value
         .trim()
         .strip_prefix('#')
@@ -158,7 +244,7 @@ fn parse_paint(value: &str) -> Result<[u8; 3], String> {
 }
 
 /// Parses a `WxH` size such as `"1280x720"`.
-fn parse_size(value: &str) -> Result<(u32, u32), String> {
+pub(crate) fn parse_size(value: &str) -> Result<(u32, u32), String> {
     let (width, height) = value
         .split_once(['x', 'X'])
         .ok_or_else(|| format!("expected WxH (e.g. 1280x720), got '{value}'"))?;
@@ -178,7 +264,7 @@ fn parse_size(value: &str) -> Result<(u32, u32), String> {
 }
 
 /// Parses a background colour: `grey`/`gray`, `transparent`, or `#rrggbb`.
-fn parse_background(value: &str) -> Result<[u8; 4], String> {
+pub(crate) fn parse_background(value: &str) -> Result<[u8; 4], String> {
     let trimmed = value.trim();
 
     match trimmed.to_ascii_lowercase().as_str() {
@@ -382,6 +468,7 @@ fn build_texture_set(
     embedded: &[rage_formats::YtdTexture],
     keys: Option<&GtaKeys>,
     index: Option<&GameIndex>,
+    log: &mut Log,
 ) -> TextureSet {
     let mut set = TextureSet::new();
     report_failed(&set.push_layer(embedded), "embedded");
@@ -396,10 +483,10 @@ fn build_texture_set(
         };
         match loaded {
             Ok(textures) => {
-                println!("Using texture dictionary {} ({} texture(s))", spec, textures.len());
+                log.say(format!("Using texture dictionary {} ({} texture(s))", spec, textures.len()));
                 report_failed(&set.push_layer(&textures), spec);
             }
-            Err(err) => eprintln!("warning: failed to load texture dictionary '{spec}': {err}"),
+            Err(err) => log.warn(format!("failed to load texture dictionary '{spec}': {err}")),
         }
     }
 
@@ -411,10 +498,10 @@ fn build_texture_set(
         let fallback = format!("{texture_stem}.ytd");
         match load_texture_dictionary(archive, &fallback, keys) {
             Ok(textures) => {
-                println!("Using texture dictionary {} ({} texture(s))", fallback, textures.len());
+                log.say(format!("Using texture dictionary {} ({} texture(s))", fallback, textures.len()));
                 report_failed(&set.push_layer(&textures), &fallback);
             }
-            Err(err) => println!("No texture dictionary {} found: {}", fallback, err),
+            Err(err) => log.say(format!("No texture dictionary {} found: {}", fallback, err)),
         }
         return set;
     };
@@ -430,10 +517,10 @@ fn build_texture_set(
         };
         match index.load_bytes(loc, keys).and_then(|data| rage_formats::parse_ytd(&data).map_err(Into::into)) {
             Ok(textures) => {
-                println!("Using texture dictionary {} ({} texture(s), via index)", loc.inner_path, textures.len());
+                log.say(format!("Using texture dictionary {} ({} texture(s), via index)", loc.inner_path, textures.len()));
                 report_failed(&set.push_layer(&textures), &loc.inner_path);
             }
-            Err(err) => eprintln!("warning: failed to load '{}' from index: {}", loc.inner_path, err),
+            Err(err) => log.warn(format!("failed to load '{}' from index: {}", loc.inner_path, err)),
         }
     }
 
@@ -458,6 +545,7 @@ fn push_resident_fallback(
     index: &GameIndex,
     keys: Option<&GtaKeys>,
     already_loaded: &mut Vec<u32>,
+    log: &mut Log,
 ) -> bool {
     let mut wanted: Vec<u32> = Vec::new();
     for name in missing {
@@ -481,11 +569,11 @@ fn push_resident_fallback(
         };
         match index.load_bytes(loc, keys).and_then(|d| rage_formats::parse_ytd(&d).map_err(Into::into)) {
             Ok(textures) => {
-                println!("Using resident texture dictionary {} ({} texture(s), via index)", loc.inner_path, textures.len());
+                log.say(format!("Using resident texture dictionary {} ({} texture(s), via index)", loc.inner_path, textures.len()));
                 report_failed(&set.push_layer(&textures), &loc.inner_path);
                 added = true;
             }
-            Err(err) => eprintln!("warning: failed to load resident dictionary '{}': {err}", loc.inner_path),
+            Err(err) => log.warn(format!("failed to load resident dictionary '{}': {err}", loc.inner_path)),
         }
     }
     added
@@ -514,16 +602,27 @@ fn parts_needed(args: &ScreenshotArgs) -> Parts {
 }
 
 pub fn run(args: &ScreenshotArgs, keys: Option<&GtaKeys>, exe: Option<&std::path::Path>) -> Result<()> {
-    let index = if args.no_index { None } else { GameIndex::load(exe, keys, parts_needed(args)) };
-    if let Some(ped) = &args.ped {
-        return run_ped(args, ped, keys, index.as_ref());
+    let report = render(args, keys, exe)?;
+    if args.json {
+        println!("{}", report.json().pretty(2));
     }
-    run_model(args, keys, index.as_ref())
+    Ok(())
+}
+
+/// Renders and writes the images, returning the report. Progress lines go
+/// to stdout unless `args.json`, in which case they are kept in the report.
+pub fn render(args: &ScreenshotArgs, keys: Option<&GtaKeys>, exe: Option<&std::path::Path>) -> Result<Report> {
+    let index = if args.no_index { None } else { GameIndex::load(exe, keys, parts_needed(args)) };
+    let mut log = Log { json: args.json, ..Default::default() };
+    if let Some(ped) = &args.ped {
+        return run_ped(args, ped, keys, index.as_ref(), &mut log);
+    }
+    run_model(args, keys, index.as_ref(), &mut log)
 }
 
 /// `--ped NAME`: the ped composed from its variation info, drawn as one
 /// composite named after it.
-fn run_ped(args: &ScreenshotArgs, ped: &str, keys: Option<&GtaKeys>, index: Option<&GameIndex>) -> Result<()> {
+fn run_ped(args: &ScreenshotArgs, ped: &str, keys: Option<&GtaKeys>, index: Option<&GameIndex>, log: &mut Log) -> Result<Report> {
     let index = index.context("--ped needs the game index: pass --exe or set GTAV_PATH")?;
     let choices = args
         .component
@@ -533,17 +632,17 @@ fn run_ped(args: &ScreenshotArgs, ped: &str, keys: Option<&GtaKeys>, index: Opti
         .map_err(anyhow::Error::msg)?;
     let composed = peds::compose(index, keys, ped, &choices)?;
     for slot in &composed.slots {
-        println!("{}", slot.line());
+        log.say(slot.line());
     }
     for warning in &composed.warnings {
-        eprintln!("warning: {warning}");
+        log.warn(warning.clone());
     }
     if composed.is_empty() {
         anyhow::bail!("no component of '{}' could be loaded", composed.name);
     }
 
     let stem = composed.name.to_lowercase();
-    let mut textures = build_texture_set(None, &args.ytd, &stem, &composed.textures, keys, Some(index));
+    let mut textures = build_texture_set(None, &args.ytd, &stem, &composed.textures, keys, Some(index), log);
     let entries = vec![Renderable {
         label: composed.name.clone(),
         hash: rage_joaat(&stem),
@@ -551,12 +650,12 @@ fn run_ped(args: &ScreenshotArgs, ped: &str, keys: Option<&GtaKeys>, index: Opti
         wheels: 0,
         parts_noun: "components",
     }];
-    render_all(&entries, &mut textures, &stem, args, args.paint, Some(index), keys)
+    render_all(&entries, &mut textures, &stem, args, args.paint, Some(index), keys, log)
 }
 
 /// A model from an archive or, with `--vehicle`, from the game: with the
 /// `_hi` swap, livery and paint applied.
-fn run_model(args: &ScreenshotArgs, keys: Option<&GtaKeys>, index: Option<&GameIndex>) -> Result<()> {
+fn run_model(args: &ScreenshotArgs, keys: Option<&GtaKeys>, index: Option<&GameIndex>, log: &mut Log) -> Result<Report> {
     let mut warnings: Vec<String> = Vec::new();
     // The model's bytes and name, the archive it came from (none for
     // --vehicle), the stem images are named by, and the vehicle name
@@ -567,7 +666,7 @@ fn run_model(args: &ScreenshotArgs, keys: Option<&GtaKeys>, index: Option<&GameI
         warnings.extend(model.warnings.iter().cloned());
         let data = index.load_bytes(&model.loc, keys)?;
         let loaded = parse_renderables(&model.loc.inner_path, drawable_kind_of(&model.loc.inner_path)?, &data)?;
-        println!("Rendering {} ({})", model.stem, model.loc.inner_path);
+        log.say(format!("Rendering {} ({})", model.stem, model.loc.inner_path));
         (None, loaded, model.stem.clone(), model.name.clone())
     } else {
         let archive_path = args.archive.as_ref().expect("clap requires an archive without --ped/--vehicle");
@@ -580,7 +679,7 @@ fn run_model(args: &ScreenshotArgs, keys: Option<&GtaKeys>, index: Option<&GameI
             match vehicles::hi_model_bytes(&archive, &stem, index, keys)? {
                 Some((hi_stem, data)) => {
                     loaded = parse_renderables(&format!("{hi_stem}.yft"), rage_formats::DrawableKind::Yft, &data)?;
-                    println!("Rendering {hi_stem}.yft");
+                    log.say(format!("Rendering {hi_stem}.yft"));
                     stem = hi_stem;
                 }
                 None => warnings.push(format!("no {}_hi.yft in the archive or the game; rendering {file}", stem.to_lowercase())),
@@ -589,8 +688,8 @@ fn run_model(args: &ScreenshotArgs, keys: Option<&GtaKeys>, index: Option<&GameI
         let vehicle_name = vehicles::base_name(&stem);
         (Some(archive), loaded, stem, vehicle_name)
     };
-    for warning in &warnings {
-        eprintln!("warning: {warning}");
+    for warning in warnings {
+        log.warn(warning);
     }
 
     let mut entries = renderables(&loaded);
@@ -605,23 +704,23 @@ fn run_model(args: &ScreenshotArgs, keys: Option<&GtaKeys>, index: Option<&GameI
     }
 
     let embedded: Vec<_> = embedded_textures_of(loaded.drawables()).into_iter().cloned().collect();
-    let mut textures = build_texture_set(archive.as_ref(), &args.ytd, &vehicle_name, &embedded, keys, index);
+    let mut textures = build_texture_set(archive.as_ref(), &args.ytd, &vehicle_name, &embedded, keys, index, log);
 
     if let Some(livery) = args.livery {
         let swaps = vehicles::apply_livery(&mut textures, loaded.drawables(), livery);
         if swaps.is_empty() {
-            eprintln!("warning: {stem} references no *_sign_1 texture; it has no liveries to swap");
+            log.warn(format!("{stem} references no *_sign_1 texture; it has no liveries to swap"));
         }
         for swap in &swaps {
             if swap.found {
-                println!("Livery {livery}: {} -> {}", swap.from, swap.to);
+                log.say(format!("Livery {livery}: {} -> {}", swap.from, swap.to));
             } else {
-                eprintln!("warning: livery {livery}: {} is not in any texture dictionary loaded; {} stays", swap.to, swap.from);
+                log.warn(format!("livery {livery}: {} is not in any texture dictionary loaded; {} stays", swap.to, swap.from));
             }
         }
         if let Some(index) = index {
             for warning in vehicles::livery_warnings(index, &vehicle_name, livery) {
-                eprintln!("warning: {warning}");
+                log.warn(warning);
             }
         }
     }
@@ -630,16 +729,16 @@ fn run_model(args: &ScreenshotArgs, keys: Option<&GtaKeys>, index: Option<&GameI
         Some(from) => {
             let index = index.context("--colour-from needs the game index: pass --exe or set GTAV_PATH")?;
             let paint = vehicles::paint_from_carcols(index, &vehicle_name, from.combination)?;
-            println!(
+            log.say(format!(
                 "Paint: {} (#{:02x}{:02x}{:02x}, carcols colour {}, combination {})",
                 paint.name, paint.rgb[0], paint.rgb[1], paint.rgb[2], paint.index, from.combination
-            );
+            ));
             Some(paint.rgb)
         }
         None => args.paint,
     };
 
-    render_all(&entries, &mut textures, &stem, args, paint, index, keys)
+    render_all(&entries, &mut textures, &stem, args, paint, index, keys, log)
 }
 
 /// Renders every entry from every view and writes the images (and grids).
@@ -651,8 +750,10 @@ fn render_all(
     paint: Option<[u8; 3]>,
     index: Option<&GameIndex>,
     keys: Option<&GtaKeys>,
-) -> Result<()> {
+    log: &mut Log,
+) -> Result<Report> {
     let mut resident_loaded: Vec<u32> = Vec::new();
+    let mut entry_reports: Vec<EntryReport> = Vec::new();
 
     let out_dir = args.output.clone().unwrap_or_else(|| PathBuf::from("."));
     std::fs::create_dir_all(&out_dir)
@@ -697,7 +798,7 @@ fn render_all(
         // the overwhelmingly common case is nothing missing at all.
         if !report.missing_textures.is_empty()
             && let Some(index) = index
-            && push_resident_fallback(textures, &report.missing_textures, index, keys, &mut resident_loaded)
+            && push_resident_fallback(textures, &report.missing_textures, index, keys, &mut resident_loaded, log)
         {
             rendered = render_parts(&entry.parts, textures, &options, &views)
                 .with_context(|| format!("failed to re-render '{}'", label))?;
@@ -714,14 +815,17 @@ fn render_all(
         } else {
             String::new()
         };
-        println!("{}", summary_line(label, &report, &parts));
-
-        if !report.missing_textures.is_empty() {
-            println!("Missing textures:");
-            for name in &report.missing_textures {
-                println!("  {name}");
+        let summary = summary_line(label, &report, &parts);
+        if !args.json {
+            println!("{summary}");
+            if !report.missing_textures.is_empty() {
+                println!("Missing textures:");
+                for name in &report.missing_textures {
+                    println!("  {name}");
+                }
             }
         }
+        let mut entry_report = EntryReport { label: label.clone(), summary, report: report.clone(), ..Default::default() };
 
         let entry_part = many_entries.then(|| label.as_str());
 
@@ -734,6 +838,7 @@ fn render_all(
             std::fs::write(&path, encoded)
                 .with_context(|| format!("failed to write {}", path.display()))?;
             written += 1;
+            entry_report.images.push((view_label.to_string(), path));
         }
 
         if args.grid {
@@ -756,11 +861,22 @@ fn render_all(
             std::fs::write(&path, encoded)
                 .with_context(|| format!("failed to write {}", path.display()))?;
             written += 1;
+            entry_report.grid = Some(path);
         }
+        entry_reports.push(entry_report);
     }
 
-    println!("Wrote {} image(s) to {}", written, out_dir.display());
-    Ok(())
+    if !args.json {
+        println!("Wrote {} image(s) to {}", written, out_dir.display());
+    }
+    let out_dir = std::path::absolute(&out_dir).unwrap_or(out_dir);
+    Ok(Report {
+        output_dir: out_dir,
+        format: ext.to_string(),
+        entries: entry_reports,
+        notes: std::mem::take(&mut log.notes),
+        warnings: std::mem::take(&mut log.warnings),
+    })
 }
 
 #[cfg(test)]
@@ -819,7 +935,7 @@ mod tests {
         let base = || ScreenshotArgs {
             archive: None, file: None, ped: None, component: vec![], vehicle: None, hi: false, livery: None, colour_from: None,
             output: None, ytd: vec![], views: vec![], facing: rage_render::Facing::Auto, size: (1, 1), grid: false, lod: LodLevel::High, format: ImageFormat::Png,
-            background: [0; 4], cull: false, vertex_colors: false, entry: None, paint: None, no_index: false, no_cluster_framing: false,
+            background: [0; 4], cull: false, vertex_colors: false, entry: None, paint: None, no_index: false, no_cluster_framing: false, json: false,
         };
         assert_eq!(parts_needed(&base()), Parts::TEXTURES);
         assert_eq!(parts_needed(&ScreenshotArgs { hi: true, ..base() }), Parts::TEXTURES | Parts::MODELS);

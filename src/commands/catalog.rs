@@ -444,35 +444,53 @@ fn mode_of(args: &SearchArgs) -> Mode {
     }
 }
 
-fn run_search(args: &SearchArgs, db: &Path) -> Result<()> {
-    let cat = Catalog::open_existing(db)?;
-    let filters = args.filters.to_filters()?;
-    let joined = args.query.join(" ");
-    let text = joined.as_str();
-    let mode = mode_of(args);
-    if mode != Mode::Lexical && text.trim().is_empty() {
+/// What `catalog search` needs besides the database: the parsed form of
+/// `SearchArgs`, so `rage mcp` can search without clap in between.
+pub struct SearchRequest<'a> {
+    pub text: &'a str,
+    pub filters: Filters,
+    pub limit: usize,
+    pub raw: bool,
+    pub mode: Mode,
+}
+
+/// Runs a search and returns the hits and coverage.
+pub fn search_hits(cat: &Catalog, req: &SearchRequest) -> Result<(Vec<search::Hit>, search::Coverage)> {
+    if req.mode != Mode::Lexical && req.text.trim().is_empty() {
         bail!("--semantic and --hybrid need a query");
     }
-    let q = SearchQuery { text, raw: args.raw, filters: &filters, limit: args.limit, mode };
-    let (hits, coverage) = search::search(&cat, &q)?;
-    let db_str = db.to_string_lossy();
+    let q = SearchQuery { text: req.text, raw: req.raw, filters: &req.filters, limit: req.limit, mode: req.mode };
+    search::search(cat, &q)
+}
 
+/// The `rage-catalog-search/1` object `catalog search --json` prints.
+pub fn search_json(db: &Path, req: &SearchRequest) -> Result<json::JsonValue> {
+    let cat = Catalog::open_existing(db)?;
+    let (hits, coverage) = search_hits(&cat, req)?;
+    let db_str = db.to_string_lossy();
+    let game_build: json::JsonValue =
+        cat.meta("game_build")?.and_then(|b| b.parse::<u64>().ok()).map(Into::into).unwrap_or(json::JsonValue::Null);
+    let results: Vec<json::JsonValue> = hits.iter().map(|h| search::hit_json(h, &db_str)).collect();
+    Ok(json::object! {
+        schema: "rage-catalog-search/1",
+        query: req.text,
+        mode: req.mode.as_str(),
+        game_build: game_build,
+        db: db_str.to_string(),
+        coverage: search::coverage_json(&coverage),
+        results: results,
+    })
+}
+
+fn run_search(args: &SearchArgs, db: &Path) -> Result<()> {
+    let joined = args.query.join(" ");
+    let req = SearchRequest { text: joined.as_str(), filters: args.filters.to_filters()?, limit: args.limit, raw: args.raw, mode: mode_of(args) };
     if args.json {
-        let game_build: json::JsonValue =
-            cat.meta("game_build")?.and_then(|b| b.parse::<u64>().ok()).map(Into::into).unwrap_or(json::JsonValue::Null);
-        let results: Vec<json::JsonValue> = hits.iter().map(|h| search::hit_json(h, &db_str)).collect();
-        let out = json::object! {
-            schema: "rage-catalog-search/1",
-            query: text,
-            mode: mode.as_str(),
-            game_build: game_build,
-            db: db_str.to_string(),
-            coverage: search::coverage_json(&coverage),
-            results: results,
-        };
-        println!("{}", out.pretty(2));
+        println!("{}", search_json(db, &req)?.pretty(2));
         return Ok(());
     }
+    let cat = Catalog::open_existing(db)?;
+    let (hits, coverage) = search_hits(&cat, &req)?;
 
     if hits.is_empty() {
         println!("No matches");
@@ -522,49 +540,64 @@ fn run_search(args: &SearchArgs, db: &Path) -> Result<()> {
     Ok(())
 }
 
-fn run_sheet(args: &SheetArgs, db: &Path, keys: Option<&GtaKeys>) -> Result<()> {
-    use crate::catalog::sheet;
-    let mut cat = Catalog::open_existing(db)?;
-    if let Some(pid) = &args.reveal {
-        let rows = sheet::reveal(&cat, pid)?;
-        if args.json {
-            let tiles: Vec<json::JsonValue> = rows
-                .iter()
-                .map(|(t, k, n, f)| json::object! { tile: *t, key: k.clone(), name: n.clone(), sheet: f.clone() })
-                .collect();
-            println!("{}", json::object! { packet_id: pid.clone(), tiles: tiles }.pretty(2));
-        } else {
-            for (t, k, n, f) in rows {
-                println!("#{t:<4} {:<12} {:<32} {k}", f, n.unwrap_or_default());
-            }
-        }
-        return Ok(());
-    }
-    let out_dir = args.output.clone().context("-o DIR is required")?;
+/// `catalog sheet --reveal PACKET_ID --json`: which asset each tile shows.
+pub fn reveal_json(db: &Path, packet_id: &str) -> Result<json::JsonValue> {
+    let cat = Catalog::open_existing(db)?;
+    let rows = crate::catalog::sheet::reveal(&cat, packet_id)?;
+    let tiles: Vec<json::JsonValue> = rows
+        .iter()
+        .map(|(t, k, n, f)| json::object! { tile: *t, key: k.clone(), name: n.clone(), sheet: f.clone() })
+        .collect();
+    Ok(json::object! { packet_id: packet_id, tiles: tiles })
+}
+
+/// Parses `--views` entries, dropping repeats.
+pub fn parse_views(specs: &[String]) -> Result<Vec<rage_render::View>> {
     let mut views = Vec::new();
-    for v in &args.views {
+    for v in specs {
         let view: rage_render::View = v.parse().map_err(|e| anyhow::anyhow!("--views: {e}"))?;
         if !views.contains(&view) {
             views.push(view);
         }
     }
-    if !(16..=2048).contains(&args.cell) {
+    Ok(views)
+}
+
+/// What `catalog sheet` needs besides the database: a selection (keys, or
+/// a query with filters) and how to draw it.
+pub struct SheetRequest {
+    pub query: String,
+    pub keys: Vec<String>,
+    pub filters: Filters,
+    pub limit: usize,
+    pub views: Vec<rage_render::View>,
+    pub facing: rage_render::Facing,
+    pub per_sheet: usize,
+    pub cell: u32,
+    pub out_dir: PathBuf,
+    pub write_tiles: bool,
+    pub seed: Option<u64>,
+    pub texture_budget_mib: usize,
+    pub quiet: bool,
+}
+
+/// Selects the items and renders the packet.
+pub fn make_sheet(db: &Path, keys: Option<&GtaKeys>, req: &SheetRequest) -> Result<crate::catalog::sheet::PacketSummary> {
+    use crate::catalog::sheet;
+    let mut cat = Catalog::open_existing(db)?;
+    if req.views.is_empty() {
+        bail!("at least one view is needed");
+    }
+    if !(16..=2048).contains(&req.cell) {
         bail!("--cell must be between 16 and 2048");
     }
-
-    let filters = args.filters.to_filters()?;
     let mut items = Vec::new();
-    let selection: Vec<String> = match &args.ids {
-        Some(file) => crate::catalog::sheet::read_selection(file)?,
-        None => args.key.clone(),
-    };
-    let query = args.query.join(" ");
-    if !selection.is_empty() {
-        for k in selection.iter().take(args.limit) {
+    if !req.keys.is_empty() {
+        for k in req.keys.iter().take(req.limit) {
             items.push(search::find_item(&cat, k)?);
         }
     } else {
-        let q = SearchQuery { text: &query, raw: false, filters: &filters, limit: args.limit, mode: Mode::Lexical };
+        let q = SearchQuery { text: &req.query, raw: false, filters: &req.filters, limit: req.limit, mode: Mode::Lexical };
         let (hits, _) = search::search(&cat, &q)?;
         items = hits.into_iter().map(|h| h.item).collect();
     }
@@ -572,38 +605,78 @@ fn run_sheet(args: &SheetArgs, db: &Path, keys: Option<&GtaKeys>) -> Result<()> 
         bail!("nothing selected");
     }
     let opts = sheet::SheetOptions {
-        views,
+        views: req.views.clone(),
+        facing: req.facing,
+        per_sheet: req.per_sheet,
+        cell: req.cell,
+        out_dir: req.out_dir.clone(),
+        write_tiles: req.write_tiles,
+        seed: req.seed,
+        query: (!req.query.is_empty()).then(|| req.query.clone()),
+        filters: format!("{:?}", req.filters),
+        texture_budget: req.texture_budget_mib << 20,
+        quiet: req.quiet,
+    };
+    sheet::make_packet(&mut cat, keys, items, &opts)
+}
+
+/// The object `catalog sheet --json` prints.
+pub fn sheet_json(summary: &crate::catalog::sheet::PacketSummary) -> json::JsonValue {
+    let sheets: Vec<String> = summary.sheets.iter().map(|p| p.to_string_lossy().to_string()).collect();
+    let skipped: Vec<json::JsonValue> = summary.skipped.iter().map(|(k, r)| json::object! { key: k.clone(), reason: r.clone() }).collect();
+    json::object! {
+        packet_id: summary.packet_id.clone(),
+        packet: summary.packet_path.to_string_lossy().to_string(),
+        responses_template: summary.template_path.to_string_lossy().to_string(),
+        sheets: sheets, tiles: summary.tiles, skipped: skipped, missing_textures: summary.missing_textures,
+    }
+}
+
+fn run_sheet(args: &SheetArgs, db: &Path, keys: Option<&GtaKeys>) -> Result<()> {
+    if let Some(pid) = &args.reveal {
+        if args.json {
+            println!("{}", reveal_json(db, pid)?.pretty(2));
+        } else {
+            let cat = Catalog::open_existing(db)?;
+            for (t, k, n, f) in crate::catalog::sheet::reveal(&cat, pid)? {
+                println!("#{t:<4} {:<12} {:<32} {k}", f, n.unwrap_or_default());
+            }
+        }
+        return Ok(());
+    }
+    let out_dir = args.output.clone().context("-o DIR is required")?;
+    let selection: Vec<String> = match &args.ids {
+        Some(file) => crate::catalog::sheet::read_selection(file)?,
+        None => args.key.clone(),
+    };
+    let req = SheetRequest {
+        query: args.query.join(" "),
+        keys: selection,
+        filters: args.filters.to_filters()?,
+        limit: args.limit,
+        views: parse_views(&args.views)?,
         facing: args.facing,
         per_sheet: args.per_sheet,
         cell: args.cell,
         out_dir,
         write_tiles: args.tiles,
         seed: args.seed,
-        query: (!query.is_empty()).then(|| query.clone()),
-        filters: format!("{:?}", filters),
-        texture_budget: args.texture_budget << 20,
+        texture_budget_mib: args.texture_budget,
         quiet: args.json,
     };
-    let summary = sheet::make_packet(&mut cat, keys, items, &opts)?;
+    let summary = make_sheet(db, keys, &req)?;
     for (key, why) in &summary.skipped {
         eprintln!("skipped {key}: {why}");
     }
     if args.json {
-        let sheets: Vec<String> = summary.sheets.iter().map(|p| p.to_string_lossy().to_string()).collect();
-        let skipped: Vec<json::JsonValue> = summary.skipped.iter().map(|(k, r)| json::object! { key: k.clone(), reason: r.clone() }).collect();
-        println!("{}", json::object! {
-            packet_id: summary.packet_id.clone(),
-            packet: summary.packet_path.to_string_lossy().to_string(),
-            responses_template: summary.template_path.to_string_lossy().to_string(),
-            sheets: sheets, tiles: summary.tiles, skipped: skipped, missing_textures: summary.missing_textures,
-        }.pretty(2));
+        println!("{}", sheet_json(&summary).pretty(2));
     } else {
         println!(
             "Packet {}: {} tile(s) on {} sheet(s) in {}{}",
             summary.packet_id,
             summary.tiles,
             summary.sheets.len(),
-            opts.out_dir.display(),
+            req.out_dir.display(),
             if summary.skipped.is_empty() { String::new() } else { format!(", {} skipped", summary.skipped.len()) }
         );
         println!("Review with {}; answer in a copy of {}", summary.packet_path.display(), summary.template_path.display());
@@ -699,12 +772,24 @@ fn truncate(s: &str, n: usize) -> String {
     }
 }
 
-fn run_get(args: &GetArgs, db: &Path, keys: Option<&GtaKeys>) -> Result<()> {
-    let cat = Catalog::open_existing(db)?;
-    let item = search::find_item(&cat, &args.key)?;
-    std::fs::create_dir_all(&args.output).with_context(|| format!("failed to create {}", args.output.display()))?;
+/// What `catalog get` wrote, and what it could not: the files on disk and a
+/// warning per texture dictionary of the chain missing from the catalogue.
+#[derive(Debug, Default)]
+pub struct GetOutcome {
+    pub item: Option<search::ItemView>,
+    pub files: Vec<PathBuf>,
+    pub warnings: Vec<String>,
+}
 
-    let (loc, file_name) = if args.rpf {
+/// Writes a catalogued entry (or with `rpf` the nested archive holding it)
+/// into `output`, and with `with_textures` the `.ytd` files of its chain.
+pub fn get_files(db: &Path, keys: Option<&GtaKeys>, key: &str, output: &Path, rpf: bool, with_textures: bool) -> Result<GetOutcome> {
+    let cat = Catalog::open_existing(db)?;
+    let item = search::find_item(&cat, key)?;
+    std::fs::create_dir_all(output).with_context(|| format!("failed to create {}", output.display()))?;
+    let mut outcome = GetOutcome::default();
+
+    let (loc, file_name) = if rpf {
         let Some((last, chain)) = item.nested.split_last() else {
             bail!("'{}' is not inside a nested archive; open {} directly", item.key, item.archive_path);
         };
@@ -719,11 +804,11 @@ fn run_get(args: &GetArgs, db: &Path, keys: Option<&GtaKeys>) -> Result<()> {
         (loc, item.entry_name.clone())
     };
     let data = load_entry(&loc, keys).with_context(|| format!("failed to read '{}'", loc.inner_path))?;
-    let out = args.output.join(safe_file_name(&file_name));
+    let out = output.join(safe_file_name(&file_name));
     std::fs::write(&out, &data).with_context(|| format!("failed to write {}", out.display()))?;
-    println!("{}", out.display());
+    outcome.files.push(out);
 
-    if args.with_textures {
+    if with_textures {
         let hit = search::hydrate(&cat, item.clone(), 0.0, "get")?;
         let mut stmt = cat.conn.prepare(
             "SELECT a.path, i.nested, i.inner_path, i.entry_name FROM items i JOIN archives a ON a.id = i.archive_id
@@ -734,7 +819,7 @@ fn run_get(args: &GetArgs, db: &Path, keys: Option<&GtaKeys>) -> Result<()> {
                 stmt.query_row([*hash as i64], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))),
             )?;
             let Some((top, nested, inner, entry_name)) = row else {
-                eprintln!("warning: texture dictionary {} (0x{hash:08X}) is not in the catalogue", name.as_deref().unwrap_or("?"));
+                outcome.warnings.push(format!("texture dictionary {} (0x{hash:08X}) is not in the catalogue", name.as_deref().unwrap_or("?")));
                 continue;
             };
             let loc = EntryLoc {
@@ -743,10 +828,22 @@ fn run_get(args: &GetArgs, db: &Path, keys: Option<&GtaKeys>) -> Result<()> {
                 inner_path: inner,
             };
             let data = load_entry(&loc, keys)?;
-            let out = args.output.join(safe_file_name(&entry_name));
+            let out = output.join(safe_file_name(&entry_name));
             std::fs::write(&out, &data).with_context(|| format!("failed to write {}", out.display()))?;
-            println!("{}", out.display());
+            outcome.files.push(out);
         }
+    }
+    outcome.item = Some(item);
+    Ok(outcome)
+}
+
+fn run_get(args: &GetArgs, db: &Path, keys: Option<&GtaKeys>) -> Result<()> {
+    let outcome = get_files(db, keys, &args.key, &args.output, args.rpf, args.with_textures)?;
+    for w in &outcome.warnings {
+        eprintln!("warning: {w}");
+    }
+    for f in &outcome.files {
+        println!("{}", f.display());
     }
     Ok(())
 }
@@ -766,7 +863,57 @@ fn base_name(path: &str) -> String {
     path.rsplit(['/', '\\']).next().unwrap_or(path).to_string()
 }
 
+/// The object `catalog info --json` prints.
+pub fn info_json(db: &Path) -> Result<json::JsonValue> {
+    let cat = Catalog::open_existing(db)?;
+    let count = |sql: &str| -> Result<i64> { Ok(cat.conn.query_row(sql, [], |r| r.get(0))?) };
+    let size = std::fs::metadata(db).map(|m| m.len()).unwrap_or(0)
+        + std::fs::metadata(db.with_extension("sqlite-wal")).map(|m| m.len()).unwrap_or(0);
+    let meta = |k: &str| cat.meta(k).ok().flatten();
+    let mut kinds_json = json::JsonValue::new_object();
+    {
+        let mut stmt = cat.conn.prepare("SELECT kind, count(*), sum(winner) FROM items GROUP BY kind ORDER BY kind")?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?)))?;
+        for row in rows {
+            let (k, n, w) = row?;
+            kinds_json[k.as_str()] = json::object! { rows: n, winners: w };
+        }
+    }
+    let mut status_json = json::JsonValue::new_object();
+    {
+        let mut stmt = cat.conn.prepare("SELECT status, count(*) FROM archives GROUP BY status ORDER BY status")?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
+        for row in rows {
+            let (s, n) = row?;
+            status_json[s.as_str()] = n.into();
+        }
+    }
+    Ok(json::object! {
+        db: db.to_string_lossy().to_string(),
+        bytes: size,
+        schema_version: meta("schema_version"),
+        game_build: meta("game_build"),
+        exe_version: meta("exe_version"),
+        built_at: meta("built_at"),
+        last_build_elapsed_ms: meta("last_build_elapsed_ms"),
+        archives: status_json,
+        items: kinds_json,
+        archetypes: count("SELECT count(*) FROM archetypes")?,
+        parse_failures: count("SELECT count(*) FROM items WHERE parse_error IS NOT NULL")?,
+        annotations: count("SELECT count(*) FROM annotations WHERE superseded_by IS NULL")?,
+        annotated_items: count("SELECT count(DISTINCT item_id) FROM annotations WHERE superseded_by IS NULL AND method IN ('visual','shared-visual')")?,
+        packets: count("SELECT count(*) FROM packets")?,
+        embeddings: count("SELECT count(*) FROM embeddings")?,
+        embed_encoder: meta("embed_encoder"),
+        report: db.with_file_name("catalog-report.json").to_string_lossy().to_string(),
+    })
+}
+
 fn run_info(args: &InfoArgs, db: &Path, exe: Option<&Path>) -> Result<()> {
+    if args.json {
+        println!("{}", info_json(db)?.pretty(2));
+        return Ok(());
+    }
     let cat = Catalog::open_existing(db)?;
     let count = |sql: &str| -> Result<i64> { Ok(cat.conn.query_row(sql, [], |r| r.get(0))?) };
     let size = std::fs::metadata(db).map(|m| m.len()).unwrap_or(0)
@@ -797,37 +944,6 @@ fn run_info(args: &InfoArgs, db: &Path, exe: Option<&Path>) -> Result<()> {
     let meta = |k: &str| cat.meta(k).ok().flatten();
     let index_path = exe.and_then(|e| crate::keys::resolve_exe(e).ok()).and_then(|e| crate::index::GameIndex::cache_dir(&e)).map(|d| d.join(crate::index::Parts::TEXTURES.file_name()));
 
-    if args.json {
-        let mut kinds_json = json::JsonValue::new_object();
-        for (k, n, w) in &kinds {
-            kinds_json[k.as_str()] = json::object! { rows: *n, winners: *w };
-        }
-        let mut status_json = json::JsonValue::new_object();
-        for (s, n) in &statuses {
-            status_json[s.as_str()] = (*n).into();
-        }
-        let out = json::object! {
-            db: db.to_string_lossy().to_string(),
-            bytes: size,
-            schema_version: meta("schema_version"),
-            game_build: meta("game_build"),
-            exe_version: meta("exe_version"),
-            built_at: meta("built_at"),
-            last_build_elapsed_ms: meta("last_build_elapsed_ms"),
-            archives: status_json,
-            items: kinds_json,
-            archetypes: archetypes,
-            parse_failures: failures,
-            annotations: annotations,
-            annotated_items: annotated,
-            packets: packets,
-            embeddings: embeddings,
-            embed_encoder: meta("embed_encoder"),
-            report: db.with_file_name("catalog-report.json").to_string_lossy().to_string(),
-        };
-        println!("{}", out.pretty(2));
-        return Ok(());
-    }
 
     println!("Catalogue: {} ({} MiB)", db.display(), size / (1 << 20));
     if let Some(v) = meta("exe_version") {
