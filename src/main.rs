@@ -16,6 +16,7 @@ mod paths;
 mod plot_inputs;
 mod props;
 mod region;
+mod plot_game;
 mod resources;
 mod update;
 mod utils;

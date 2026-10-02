@@ -321,3 +321,28 @@ fn plots_path_nodes() {
     let out = ok(&["plot", &path, "--layers", "paths", "--scale", "10", "-o", png.to_str().unwrap()]);
     assert!(out.contains("region -3502.0,-402.0..-3468.0,-388.0"), "{out}");
 }
+
+#[test]
+fn game_needs_a_region_and_the_game() {
+    let dir = tempfile::tempdir().unwrap();
+    let png = dir.path().join("out.png");
+    let out = rage(&["plot", "--game", "-o", png.to_str().unwrap()]);
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("--region"), "{err}");
+
+    let out = Command::new(env!("CARGO_BIN_EXE_rage"))
+        .args(["plot", "--game", "--region=0,0,100,100", "-o", png.to_str().unwrap()])
+        .env("RAGE_NO_UPDATE_CHECK", "1")
+        .env_remove("GTAV_PATH")
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("--exe") || err.contains("GTAV_PATH"), "{err}");
+
+    // The game flags are only for --game.
+    let out = rage(&["plot", "x.ynv", "--detail", "4", "-o", png.to_str().unwrap()]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("--game"));
+}

@@ -654,6 +654,9 @@ mod tests {
             scale_z: 1.0,
             parent_index: -1,
             lod_dist: 0.0,
+            child_lod_dist: -1.0,
+            lod_level: 0,
+            num_children: 0,
             is_mlo_instance: false,
         };
         let room = rage_formats::MloRoom { name: "hall".into(), bb_min: splat(0.0), bb_max: splat(0.0), flags: 0, floor_id: 0, attached_objects: vec![0, 1] };

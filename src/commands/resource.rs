@@ -1330,6 +1330,9 @@ fn json_map(ymap: &Ymap, names: &NameTable, checks: &Checks) -> json::JsonValue 
                 scale_xy: e.scale_xy,
                 scale_z: e.scale_z,
                 lod_dist: e.lod_dist,
+                child_lod_dist: e.child_lod_dist,
+                lod_level: e.lod_level,
+                num_children: e.num_children,
                 parent_index: e.parent_index,
                 flags: e.flags,
                 flag_names: entity_flag_names(e.flags),
@@ -1550,7 +1553,8 @@ mod tests {
         let h = std::f32::consts::FRAC_1_SQRT_2;
         let e = |rotation: [f32; 4]| YmapEntity {
             archetype_hash: 0, flags: 0, guid: 0, position: Vec3::new(0.0, 0.0, 0.0), rotation,
-            scale_xy: 1.0, scale_z: 1.0, parent_index: -1, lod_dist: 0.0, is_mlo_instance: false,
+            scale_xy: 1.0, scale_z: 1.0, parent_index: -1, lod_dist: 0.0,
+            child_lod_dist: -1.0, lod_level: 0, num_children: 0, is_mlo_instance: false,
         };
         assert!((entity_yaw_degrees(&e([0.0, 0.0, 0.0, 1.0]))).abs() < 1e-4);
         // A stored +90° about z is a -90° heading in the world.

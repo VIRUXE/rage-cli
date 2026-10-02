@@ -394,6 +394,9 @@ mod tests {
             scale_z: 1.0,
             parent_index: -1,
             lod_dist: 0.0,
+            child_lod_dist: -1.0,
+            lod_level: 0,
+            num_children: 0,
             is_mlo_instance: false,
         }
     }

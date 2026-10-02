@@ -14,7 +14,9 @@ use rage_render::{
 };
 
 use crate::plot_inputs::{self, Explicit, Mesh, PlotSources, SkipReason};
+use crate::plot_game::{self, GameLayers};
 use crate::props::{PropResolver, PropShape};
+use crate::region::{self, RegionOptions};
 use crate::rpf::GtaKeys;
 use crate::utils::{parse_marker, parse_pair, parse_quad};
 
@@ -36,6 +38,10 @@ pub enum LayerArg {
     Navmesh,
     /// Path nodes and links from .ynd: where the game drives vehicles and walks peds
     Paths,
+    /// Water quads from water.xml (with --game)
+    Water,
+    /// Height contours from the world heightmap (with --game)
+    Terrain,
 }
 
 impl From<LayerArg> for Layer {
@@ -48,6 +54,8 @@ impl From<LayerArg> for Layer {
             LayerArg::Drawable => Layer::Drawable,
             LayerArg::Navmesh => Layer::Navmesh,
             LayerArg::Paths => Layer::Paths,
+            LayerArg::Water => Layer::Water,
+            LayerArg::Terrain => Layer::Terrain,
         }
     }
 }
@@ -56,9 +64,35 @@ impl From<LayerArg> for Layer {
 pub struct PlotArgs {
     /// Files (.ynv .ynd .ybn .ymap .ytyp .ydr .ydd), FiveM resource folders
     /// (scanned recursively), or vanilla MLO archetype names / 0x hashes
-    /// (resolved through the game index)
-    #[arg(required = true, num_args = 1..)]
+    /// (resolved through the game index); optional with --game
+    #[arg(required_unless_present = "game", num_args = 0..)]
     pub inputs: Vec<String>,
+
+    /// Draw the vanilla map over --region: every map chunk the game streams
+    /// there (LOD-filtered at the region's scale), the interiors they place,
+    /// water, terrain contours, navmesh and path cells, from the game's
+    /// archives (needs --exe or GTAV_PATH)
+    #[arg(long, requires = "region")]
+    pub game: bool,
+
+    /// With --game: CodeWalker's map view detail. The LOD level is picked at
+    /// a view distance of the region's longer side divided by this; 1 shows
+    /// what the map view shows at that zoom, higher brings in HD props
+    #[arg(long, default_value = "1", value_name = "D", requires = "game")]
+    pub detail: f32,
+
+    /// With --game: cap the LOD tree at this level (hd, lod, slod1, slod2,
+    /// slod3, slod4); orphanhd, the default, shows every level
+    #[arg(long, default_value = "orphanhd", value_name = "LEVEL", requires = "game")]
+    pub max_lod: String,
+
+    /// With --game: only maps switched on at this hour (0-23)
+    #[arg(long, value_name = "H", requires = "game")]
+    pub hour: Option<u32>,
+
+    /// With --game: only maps allowed in this weather (e.g. rain, snow)
+    #[arg(long, value_name = "NAME", requires = "game")]
+    pub weather: Option<String>,
 
     /// A .ymap whose MLO instance places the interior in the world; without
     /// one the plan stays in the interior's own coordinates
@@ -82,9 +116,11 @@ pub struct PlotArgs {
     #[arg(long, value_name = "FILE")]
     pub ydr: Vec<PathBuf>,
 
-    /// Layers to draw (comma separated)
-    #[arg(long, value_delimiter = ',', default_value = "rooms,portals,entities,collision,drawable,navmesh,paths")]
-    pub layers: Vec<LayerArg>,
+    /// Layers to draw (comma separated). Default: rooms,portals,entities,
+    /// collision,drawable,navmesh,paths; with --game: entities,water,
+    /// terrain,navmesh,paths (collision and drawable can be added)
+    #[arg(long, value_delimiter = ',')]
+    pub layers: Option<Vec<LayerArg>>,
 
     /// Draw one storey: geometry from Z-0.3 to Z+2.0 m
     #[arg(long, value_name = "Z", conflicts_with = "z_range")]
@@ -168,9 +204,40 @@ pub fn run(args: &PlotArgs, keys: Option<&GtaKeys>, exe: Option<&Path>) -> Resul
         ybn: args.ybn.clone(),
         ydr: args.ydr.clone(),
     };
-    let sources = plot_inputs::resolve(&args.inputs, &explicit, keys, exe)?;
+    let layers: Vec<Layer> = match &args.layers {
+        Some(layers) => layers.iter().map(|l| Layer::from(*l)).collect(),
+        None if args.game => plot_game::DEFAULT_LAYERS.to_vec(),
+        None => vec![Layer::Rooms, Layer::Portals, Layer::Entities, Layer::Collision, Layer::Drawable, Layer::Navmesh, Layer::Paths],
+    };
+    let game_opts = match args.game {
+        true => Some(RegionOptions {
+            region: region.context("--game needs --region")?,
+            detail: args.detail,
+            max_lod: region::parse_lod_level(&args.max_lod).context("--max-lod")?,
+            hour: args.hour,
+            weather: args.weather.as_deref().map(region::weather_hash),
+            scripted: true,
+        }),
+        false => None,
+    };
+    if let Some(hour) = args.hour
+        && hour > 23
+    {
+        bail!("--hour expects 0..23");
+    }
 
+    let mut sources = plot_inputs::resolve(&args.inputs, &explicit, keys, exe)?;
+    // The placement is settled on the inputs alone: a vanilla map's first
+    // entity must not stand in for a .ymap that places an interior.
     let placement = find_placement(&sources);
+    if let Some(opts) = &game_opts {
+        let game = plot_game::load(opts, &layers, keys, exe)?;
+        for warning in &game.warnings {
+            eprintln!("warning: {warning}");
+        }
+        add_game_sources(&mut sources, game);
+    }
+
     let mut props = PropResolver::new(&sources, keys, exe, !args.no_props, args.props);
     let scene = build_scene(args, &sources, &placement, z_band, region, markers, &mut props)?;
 
@@ -181,7 +248,6 @@ pub fn run(args: &PlotArgs, keys: Option<&GtaKeys>, exe: Option<&Path>) -> Resul
         }
     }
 
-    let layers: Vec<Layer> = args.layers.iter().map(|l| Layer::from(*l)).collect();
     let defaults = PlanOptions::default();
     let scale = match args.scale {
         Some(scale) => scale,
@@ -215,6 +281,25 @@ pub fn run(args: &PlotArgs, keys: Option<&GtaKeys>, exe: Option<&Path>) -> Resul
     }
     println!("Wrote {} ({})", args.output.display(), summary(&report));
     Ok(())
+}
+
+/// Files the vanilla map read for `region` into the plot's sources: the
+/// visible exterior entities as one `.ymap` entry (drawn with their props
+/// like any exterior map's), the navmesh, path and collision chunks as
+/// world-space files, and the rest kept aside for `build_scene`.
+fn add_game_sources(sources: &mut PlotSources, mut game: GameLayers) {
+    if sources.label.is_empty() {
+        sources.label = "vanilla map".to_string();
+    }
+    let exterior: Vec<YmapEntity> = game.region.leaves.iter().filter(|l| !l.entity.is_mlo_instance).map(|l| l.entity).collect();
+    if !exterior.is_empty() {
+        sources.ymaps.push(("the game".to_string(), exterior, Vec::new()));
+    }
+    sources.ynvs.extend(std::mem::take(&mut game.ynvs));
+    sources.ynds.extend(std::mem::take(&mut game.ynds));
+    sources.ybns.extend(std::mem::take(&mut game.ybns).into_iter().map(|(name, data)| Mesh { name, explicit: false, data }));
+    sources.notes.extend(std::mem::take(&mut game.caption));
+    sources.game = Some(game);
 }
 
 /// The usual pixels per metre, when nothing asks for another.
@@ -251,6 +336,8 @@ fn summary(report: &PlanReport) -> String {
                 Layer::Drawable => "drawable tris",
                 Layer::Navmesh => "navmesh polys",
                 Layer::Paths => "path nodes",
+                Layer::Water => "water quads",
+                Layer::Terrain => "contour levels",
             };
             format!("{n} {noun}")
         })
@@ -653,6 +740,27 @@ fn build_scene(
         eprintln!("{dangling_links} path links lead into cells that were not given; not drawn");
     }
 
+    // The vanilla map's interiors: the placement itself marked, and its
+    // entities as CodeWalker's `RenderWorldAddInteriorEntities` adds them;
+    // then the water and the ground.
+    if let Some(game) = &sources.game {
+        for leaf in game.region.leaves.iter().filter(|l| l.entity.is_mlo_instance) {
+            scene.entities.push(EntityMark { position: leaf.entity.position, label: name_of(leaf.entity.archetype_hash), set: None, faded: false });
+        }
+        let mut interior_entities = 0usize;
+        for interior in &game.interiors {
+            for (archetype, position) in &interior.entities {
+                scene.entities.push(EntityMark { position: *position, label: name_of(*archetype), set: None, faded: true });
+                interior_entities += 1;
+            }
+        }
+        if interior_entities > 0 {
+            scene.caption.push(format!("{interior_entities} interior entities from {} placements", game.interiors.len()));
+        }
+        scene.water = game.water.clone();
+        scene.terrain = game.terrain.clone();
+    }
+
     scene.markers = markers;
 
     // Only geometry stored in the interior's own space needs a .ymap to say
@@ -824,6 +932,9 @@ mod tests {
             scale_z: 1.0,
             parent_index: -1,
             lod_dist: 0.0,
+            child_lod_dist: -1.0,
+            lod_level: 0,
+            num_children: 0,
             is_mlo_instance: false,
         }
     }

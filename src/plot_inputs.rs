@@ -60,6 +60,8 @@ pub struct PlotSources {
     /// Anything the reader had to decide for the caller — an interior placed
     /// in several .ymaps, say. `plot` puts these on the page's caption.
     pub notes: Vec<String>,
+    /// What `--game` read for the region, when it was asked for.
+    pub game: Option<crate::plot_game::GameLayers>,
 }
 
 /// A mesh file that was read: collision or a drawable dictionary.
@@ -474,6 +476,9 @@ mod tests {
                 scale_z: 1.0,
                 parent_index: -1,
                 lod_dist: 100.0,
+                child_lod_dist: -1.0,
+                lod_level: 0,
+                num_children: 0,
                 is_mlo_instance: true,
             },
             group_id: 0,

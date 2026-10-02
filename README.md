@@ -204,7 +204,7 @@ debug logging, `--no-update-check` to skip the daily release check.
 | `screenshot <archive> <file> [--views ...] [--grid] [--ytd NAME]... [--paint #rrggbb] [--background ...] [--size WxH] [--lod ...] [--entry ...]` | render a `.ydr`/`.ydd`/`.yft` from up to six fixed angles, textures resolved from the file, `--ytd` and the index |
 | `screenshot --vehicle NAME [--hi] [--livery N] [--colour-from carcols[:C]]` (also with `<archive> <file>`) | a vehicle by name through the index: its high-detail model, one of its liveries, its paint from carcols and carvariations |
 | `screenshot --ped NAME [--component SLOT=D[:T[:A]]]...` | a ped composed from its variation info: the 12 component slots' default drawables and textures, or the ones named |
-| `plot <input>... [--ymap\|--ytyp\|--ybn\|--ydr FILE]... [--layers ...] [--floor-z Z\|--z-range LO,HI] [--region ...] [--scale PX] [--marker x,y,label]... [--labels] [--props N\|--no-props] [--title T] [--quality Q] -o FILE` | a top-down plan of an interior — rooms, portals, props, collision, drawable shell, navmesh and path nodes — or of an exterior map, its entities drawn with their models — as PNG, JPG, WebP or SVG |
+| `plot [<input>...] [--game --region x0,y0,x1,y1 [--detail D] [--max-lod LEVEL] [--hour H] [--weather W]] [--ymap|--ytyp|--ybn|--ydr FILE]... [--layers ...] [--floor-z Z|--z-range LO,HI] [--region ...] [--scale PX] [--marker x,y,label]... [--labels] [--props N|--no-props] [--title T] [--quality Q] -o FILE` | a top-down plan of an interior — rooms, portals, props, collision, drawable shell, navmesh and path nodes — of an exterior map, its entities drawn with their models — or, with `--game`, of a box of the vanilla map: every chunk the game streams there, LOD-filtered, with water and height contours — as PNG, JPG, WebP or SVG ||--ytyp\|--ybn\|--ydr FILE]... [--layers ...] [--floor-z Z\|--z-range LO,HI] [--region ...] [--scale PX] [--marker x,y,label]... [--labels] [--props N\|--no-props] [--title T] [--quality Q] -o FILE` | a top-down plan of an interior — rooms, portals, props, collision, drawable shell, navmesh and path nodes — or of an exterior map, its entities drawn with their models — as PNG, JPG, WebP or SVG |
 
 ### Navmeshes
 
@@ -244,6 +244,7 @@ in the recipe below; the props are vanilla.
 | One storey with labels (SVG) | `plot ... --floor-z 21.25 --labels` | [plot-catcafe-floor.svg](docs/images/plot-catcafe-floor.svg) |
 | Rooms, portals and navmesh only (WebP) | `plot ... --floor-z 21.25 --layers rooms,portals,navmesh --scale 20` | [plot-catcafe-rooms.webp](docs/images/plot-catcafe-rooms.webp) |
 | Vanilla interior by name (JPEG) | `plot v_bahama --scale 20` | [plot-bahama.jpg](docs/images/plot-bahama.jpg) |
+| A box of the vanilla map (JPEG) | `plot --game --region=-1700,-1200,-1100,-600 --scale 2` | [plot-region-docks.jpg](docs/images/plot-region-docks.jpg) |
 | Model from several angles (JPEG grid) | `screenshot weapons.rpf w_ar_carbinerifle.ydr --views front,top,iso --grid` | [screenshot-carbinerifle-grid.jpg](docs/images/screenshot-carbinerifle-grid.jpg) |
 | Model from one angle (WebP) | `screenshot weapons.rpf w_ar_carbinerifle.ydr --views iso --size 800x500 --format webp` | [screenshot-carbinerifle-iso.webp](docs/images/screenshot-carbinerifle-iso.webp) |
 | Vehicle with wheels and paint (JPEG grid) | `screenshot vehicles.rpf adder.yft --views front,left,iso --grid --ytd adder --ytd vehshare --paint "#8b1a1a"` | [screenshot-adder-paint-grid.jpg](docs/images/screenshot-adder-paint-grid.jpg) |
@@ -874,6 +875,41 @@ rage plot nodes911.ynd --layers paths --scale 2 -o paleto-paths.png
 
 ![Paleto Bay's road network from nodes911.ynd](docs/images/plot-paths-paleto.png)
 
+### Plot a box of the vanilla map
+
+`--game` draws what the game itself streams over `--region`, read straight
+out of the archives: the `cache_y.dat` map nodes whose extents meet the box
+and their LOD parents, the maps a manifest switches off at an hour or
+weather left out, and every entity linked into CodeWalker's LOD tree so that
+the page shows what its map view shows at that zoom. The view distance is
+the region's longer side, so a 600 m box is drawn from LOD and SLOD chunks;
+`--detail 4` quarters it and brings the HD props in, `--max-lod lod` caps the
+tree at a level, `--hour 22` and `--weather rain` apply the timed and
+weather-gated map groups. Interiors placed in the box contribute their
+entities, faded.
+
+Two layers only the game can provide come on by default: `water`, the quads
+of `water.xml` (dashed where the game marks them invisible), and `terrain`,
+height contours from `heightmap.dat` at a round step named in the legend
+(the max-height surface, so a tower rings like a hill). `navmesh` and
+`paths` fetch the cells covering the box; `collision` (off by default: a
+block is millions of triangles) reads the `.ybn` chunks the cache's bounds
+store places there. Inputs and `--game` combine, so a resource folder can be
+drawn over its vanilla surroundings.
+
+```sh
+rage plot --game --region=-1700,-1200,-1100,-600 -o docks.png
+rage plot --game --region=-1400,-900,-1250,-750 --detail 8 --labels -o docks-hd.svg
+rage plot --game --region=-1700,-1200,-1100,-600 --layers entities,water,terrain --no-props --scale 2 -o docks-terrain.png
+```
+
+![A 600 m box of the docks: LOD entities with their models, the navmesh, roads, water and height contours](docs/images/plot-region-docks.jpg)
+
+The caption counts the maps streamed and the entities shown at the view
+distance. As in CodeWalker, a map and the DLC copy that replaces it
+(`vb_rd` and `hei_vb_rd`) are both in the cache and both drawn; the first
+run builds the `world` index part (see [The game index](#the-game-index)).
+
 ### Plot an interior
 
 An MLO is a custom interior: one archetype standing in for a room layout,
@@ -1147,12 +1183,14 @@ src/
   commands/          one file per command; parse arguments, call the libraries, print
     navmesh.rs       the navmesh subcommands (cell lookup, OBJ/PNG output, build wiring)
     plot.rs          `plot`: placement, MLO-vs-world-space meshes, room-box estimation, exterior entities, the caption
+    plot_game.rs     `plot --game`: the region's interiors, water, heightmap and navmesh/path/collision chunks through the index
     resource.rs      `resource info`/`dump`/`build`/`recalc`: container detection, per-format summaries, XML/JSON dumps, Meta/PSO rebuilds
     resource_drawable.rs  the drawable and bound side of `resource`: `.ydr`/`.ybn` dump to CodeWalker's XML, checked build, `info` extras
     names.rs         `names`: harvesting the game's names, lookups
     ymap.rs          `ymap from-menyoo`: a map from a Menyoo spooner XML, CodeWalker's import
     manifest.rs      `manifest generate`: a _manifest.ymf from a folder's maps and type files, CodeWalker's layout
   plot_inputs.rs     turning plot's free-form inputs (files, a resource folder, a vanilla name) into parsed sources
+  region.rs          a box of the vanilla map assembled as CodeWalker streams it: cache map nodes, the LOD tree, the visible leaves
   props.rs           what to draw for a placed entity: a folder model, a game model through the index, a box, or nothing
   names.rs           the name table `resource` prints through: built-in, harvested, `--names`, sibling file stems
   navmesh/mod.rs     the generator: grid, blocking, rectangles, edge linking, sinking
