@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 mod rpf;
 mod catalog;
 mod commands;
+mod mcp;
 mod navmesh;
 mod names;
 mod index;
@@ -22,7 +23,7 @@ mod resources;
 mod update;
 mod utils;
 
-use commands::{info, list, extract, verify, tree, textures, screenshot, create, search, resource, index_cmd, navmesh as navmesh_cmd, paths as paths_cmd, plot, names as names_cmd, ytyp, ymap, manifest, catalog as catalog_cmd};
+use commands::{info, list, extract, verify, tree, textures, screenshot, create, search, resource, index_cmd, navmesh as navmesh_cmd, paths as paths_cmd, plot, names as names_cmd, ytyp, ymap, manifest, catalog as catalog_cmd, mcp as mcp_cmd};
 use commands::update as update_cmd;
 use rpf::GtaKeys;
 
@@ -176,6 +177,10 @@ enum Commands {
     /// in the game, with blind review sheets and annotations for agents
     Catalog(catalog_cmd::CatalogArgs),
 
+    /// Serve the catalogue, renders and resource info to an MCP client
+    /// (Claude Code, Cursor, ...) as tools over stdio
+    Mcp(mcp_cmd::McpArgs),
+
     /// Write the keys out to disk for reuse with --keys
     ExtractKeys {
         /// Directory to save extracted keys into
@@ -241,6 +246,7 @@ fn dispatch(command: Commands, keys: Option<&GtaKeys>, exe: Option<&Path>, verbo
         Commands::Ymap(args)                                 => ymap::run(&args, keys, exe),
         Commands::Manifest(args)                             => manifest::run(&args, keys, exe),
         Commands::Catalog(args)                              => catalog_cmd::run(&args, keys, exe),
+        Commands::Mcp(args)                                  => mcp_cmd::run(&args, keys, exe),
         Commands::Create { input, output, version, encryption } => {
             create::run(&input, &output, version, &encryption, keys)
         }

@@ -193,6 +193,23 @@ provided in `commands` — before `screenshot` or `textures` can open it.
 - When reporting results to whoever asked, record which candidates you used
   and which you rejected, and why.
 
+## Over MCP
+
+`rage mcp` serves the same loop as tools to an MCP client, so none of the
+commands above has to be spelled out or parsed: `catalog_info`,
+`catalog_search`, `catalog_get`, `catalog_sheet`, `catalog_reveal`,
+`catalog_annotate`, `screenshot` and `resource_info`, each returning the
+object the command's `--json` prints. Register it once:
+
+```sh
+claude mcp add rage -s user -- rage mcp
+```
+
+`catalog_sheet` and `screenshot` take `inline_images: true` to hand you the
+pictures directly; `catalog_annotate` takes `responses_json` (the filled-in
+responses object) instead of a file path. The rules below apply unchanged,
+and the server repeats them to you at `initialize`.
+
 ## Sharing
 
 - `rage catalog pack export -o FILE` writes text-only annotations (no

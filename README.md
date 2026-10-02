@@ -64,7 +64,8 @@ can use on their own.
 
 A sibling project, [fivem-mcp](https://github.com/VIRUXE/fivem-mcp), drives a
 running FiveM client from an AI agent; it is how the navmesh work below gets
-verified in game.
+verified in game. `rage mcp` does the same for the game files: the catalogue,
+renders and resource info as MCP tools (see [Agents over MCP](#agents-over-mcp)).
 
 ## Install
 
@@ -266,6 +267,12 @@ index uses.
 | `catalog annotate ...` | import a reviewer's descriptions, checked against the tile image hashes |
 | `catalog pack export\|import ...` | text-only annotation packs |
 | `catalog embed ...` | local text embeddings (needs a build with `--features semantic`) |
+
+### MCP server
+
+| Command | Does |
+|---|---|
+| `mcp [--db FILE] [--output DIR]` | serve `catalog_search`, `catalog_get`, `catalog_info`, `catalog_sheet`, `catalog_reveal`, `catalog_annotate`, `screenshot` and `resource_info` as MCP tools over stdio; files tools write land under `--output` (default `~/.rage-cli/mcp`) unless a call names an `output_dir` |
 
 ### Maintenance
 
@@ -842,6 +849,41 @@ first use; about 80 items a second on the same i3, so reviewed items are
 embedded by default and every model name only with `--models`).
 [AGENTS.md](AGENTS.md) is the full guide for an agent doing the reviewing.
 
+### Agents over MCP
+
+Everything above is a shell command an agent has to spell out and parse.
+`rage mcp` hands the same operations to any MCP client as typed tools with
+JSON results, over stdio:
+
+```sh
+claude mcp add rage -s user -- rage mcp          # Claude Code
+```
+
+For Claude Desktop, Cursor or another client, the entry is the same command:
+
+```json
+{ "mcpServers": { "rage": { "command": "rage", "args": ["mcp"], "env": { "GTAV_PATH": "C:\Games\Grand Theft Auto V" } } } }
+```
+
+The eight tools wrap the commands they are named after and return the object
+the command's `--json` prints: `catalog_search`, `catalog_get`,
+`catalog_info`, `catalog_sheet`, `catalog_reveal`, `catalog_annotate`,
+`screenshot` (by catalogue key, archive and file, ped, or vehicle; an entry
+inside a nested archive is unpacked first) and `resource_info`. `screenshot`
+and `catalog_sheet` take `inline_images: true` to return the pictures as
+image content, so a vision-capable client can review a contact sheet
+without a separate file read, and `catalog_annotate` takes the responses as
+an object (`responses_json`) as well as a path. The server tells the client's
+model the review rules from [AGENTS.md](AGENTS.md) at `initialize`.
+
+A tool that fails (no catalogue yet, an unknown key, a render error) answers
+with `isError` and the error text; only a malformed request or a wrong
+argument type is a protocol error. `catalog build`, `pack` and `embed` stay
+on the command line: they run for minutes or write shared files. The
+process's own stdout is swapped for stderr while serving, so nothing any
+command prints can corrupt the protocol stream; progress and warnings show
+up in the client's server log.
+
 ### Drawable dictionaries and fragments
 
 Entries in a `.ydd` mostly share one name, the file's own, so they are
@@ -1199,7 +1241,7 @@ Things learned the hard way:
 | `RAGE_UPDATE_CACHE` | where the update-check stamp lives |
 | `RAGE_NAMES` | the harvested hash-to-name list (default `~/.rage-cli/names.txt`) |
 | `RAGE_CATALOG` | the catalogue database file; same as `--db` (default `~/.rage-cli/catalog/<game build>/catalog.sqlite`) |
-| `~/.rage-cli/` | keys, index, catalogue, names and update stamp; an existing `~/.rpf-cli` is used as is |
+| `~/.rage-cli/` | keys, index, catalogue, names, `mcp` output and update stamp; an existing `~/.rpf-cli` is used as is |
 | `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY` | honoured by the update check and installer |
 
 The `RPF_*` spellings of the variables still work.
@@ -1308,7 +1350,13 @@ src/
     names.rs         `names`: harvesting the game's names, lookups
     ymap.rs          `ymap from-menyoo`: a map from a Menyoo spooner XML, CodeWalker's import
     manifest.rs      `manifest generate`: a _manifest.ymf from a folder's maps and type files, CodeWalker's layout
-    catalog.rs       `catalog`: clap args and printing for build/search/get/info/sheet/annotate/pack/embed
+    catalog.rs       `catalog`: clap args and printing for build/search/get/info/sheet/annotate/pack/embed; the value-returning cores `rage mcp` shares
+    mcp.rs           `mcp`: clap args for the server
+  mcp/
+    mod.rs           the stdio server: stdout swap, line loop, initialize/tools dispatch
+    rpc.rs           JSON-RPC 2.0 framing: requests, notifications, batches, error codes
+    tools.rs         the tool table: schemas, typed argument decoding, the call into each command
+    base64.rs        the encoder for inline image content
   catalog/
     mod.rs           the Catalog handle, kinds, keys, db path
     schema.rs        SQLite DDL, FTS5, migrations

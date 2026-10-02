@@ -1848,6 +1848,7 @@ dependencies = [
  "fastembed",
  "glob",
  "json",
+ "libc",
  "log",
  "memmap2",
  "rage-formats",
@@ -1860,6 +1861,7 @@ dependencies = [
  "tempfile",
  "thiserror 1.0.69",
  "ureq",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

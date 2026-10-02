@@ -42,12 +42,12 @@ fastembed = { version = "7", optional = true, default-features = false, features
 tempfile = "3.10"
 rage-formats = { version = "0.5.0", features = ["test-support"] }
 
-# Cross-compilation targets
+# `rage mcp` swaps the process's stdout for stderr so the protocol owns it.
 [target.'cfg(windows)'.dependencies]
-# Windows-specific dependencies if needed
+windows-sys = { version = "0.52", features = ["Win32_Foundation", "Win32_System_Console"] }
 
 [target.'cfg(unix)'.dependencies]
-# Unix/Linux-specific dependencies if needed
+libc = "0.2"
 
 # Optimizations for release builds
 [profile.release]

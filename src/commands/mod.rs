@@ -20,3 +20,4 @@ pub mod manifest;
 pub mod ymap;
 pub mod ymap_lodlights;
 pub mod catalog;
+pub mod mcp;
