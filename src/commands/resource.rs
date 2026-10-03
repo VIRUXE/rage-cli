@@ -38,6 +38,8 @@ pub enum ResourceCommand {
     Build(BuildArgs),
     /// Fix the flags and extents of .ymap files in place (a file, or every .ymap in a folder)
     Recalc(RecalcArgs),
+    /// Convert GTA V Enhanced (Gen9) .ytd files to the legacy layout FiveM loads (more types to follow)
+    Convert(super::resource_convert::ConvertArgs),
 }
 
 #[derive(clap::Args)]
@@ -287,6 +289,11 @@ fn parse_contents(name: &str, data: &[u8], container: &Container) -> Result<Cont
     match container {
         Container::Rsc7(header) => {
             if ext == "ytd" {
+                // An Enhanced dictionary lays its textures out differently; read it through the conversion.
+                if rage_formats::Edition::of("ytd", header.version) == Some(rage_formats::Edition::Gen9) {
+                    let legacy = rage_formats::convert_ytd_to_legacy(data).context("failed to read this Enhanced (Gen9) texture dictionary")?;
+                    return Ok(Contents::Textures(parse_ytd(&legacy).context("failed to parse texture dictionary")?));
+                }
                 return Ok(Contents::Textures(parse_ytd(data).context("failed to parse texture dictionary")?));
             }
             if let Some(kind) = DrawableKind::from_extension(&ext) {
@@ -334,6 +341,7 @@ pub fn run(args: &ResourceArgs, keys: Option<&GtaKeys>, exe: Option<&Path>, verb
         ResourceCommand::Rename(rename) => run_rename(rename),
         ResourceCommand::Build(build) => run_build(build, keys, exe),
         ResourceCommand::Recalc(recalc) => run_recalc(recalc, keys, exe),
+        ResourceCommand::Convert(convert) => super::resource_convert::run(convert),
     }
 }
 
@@ -998,6 +1006,16 @@ fn write_text(out: &mut String, args: &InfoArgs, container: &Container, contents
     match container {
         Container::Rsc7(h) => {
             writeln!(out, "Format:    RSC7  version {}", h.version).unwrap();
+            match rage_formats::Edition::of(&extension_of(&args.file), h.version) {
+                Some(rage_formats::Edition::Gen9) if extension_of(&args.file) == "ytd" => {
+                    writeln!(out, "Edition:   Enhanced (Gen9); the textures below are as `resource convert` would write them").unwrap()
+                }
+                Some(rage_formats::Edition::Gen9) => writeln!(
+                    out, "Edition:   Enhanced (Gen9); shaders, vertex data and parameters are read with the legacy layout, so treat them as approximate"
+                ).unwrap(),
+                Some(edition) => writeln!(out, "Edition:   {edition}").unwrap(),
+                None => {}
+            }
             let from_flags = resource_version_from_flags(h.system_flags, h.graphics_flags);
             if from_flags != h.version {
                 writeln!(out, "           (warning: flags encode version {from_flags})").unwrap();

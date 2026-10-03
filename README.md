@@ -212,6 +212,7 @@ debug logging, `--no-update-check` to skip the daily release check.
 | `resource rename <file> <name> [--from NAME] [-o FILE] [--dry-run]` | change a name inside a file in place: a `.ymap`'s own name (the default), or any hash field or XML value equal to `--from`, in Meta, PSO and XML files |
 | `resource build <file.xml\|file.json> -o FILE [--format meta\|pso] [--schema FILE]... [--strict] [--no-recalc] [--ytyp PATH]...` | the inverse of `dump`: a `.ymap`/`.ytyp`/`.ymt` (RSC7 Meta) or `_manifest.ymf`/`.pso` (PSO) from the XML or JSON, using CodeWalker's structure tables, or those of the original file with `--schema` |
 | `resource build <file.xml> -o FILE.ydr\|FILE.ybn\|FILE.ynd [--textures DIR] [--strict]` | the inverse of the drawable/bound/path `dump`: a `.ydr` (version 165), `.ybn` (version 43) or `.ynd` (version 1) from CodeWalker's XML, textures read from `DIR` (default: the XML's folder); the written file is read back and must dump identically, or nothing is written; a texture that is not embedded or a bone without a name is a warning, an error with `--strict` |
+| `resource convert <file\|folder>... -o DIR [--dry-run]` | convert Enhanced (Gen9) `.ytd` files to the legacy layout FiveM loads (other types are skipped with a note for now); refuses what the legacy game cannot hold, never overwrites the input |
 | `resource recalc <ymap\|folder>... [--ytyp PATH]... [--dry-run] [--json]` | fix `.ymap` flags, `contentFlags` and extents in place, as `build` works them out; a folder is searched for every `.ymap`, and a file is rewritten only when something changed |
 | `ytyp from-drawables <file\|dir>... -o FILE.ytyp [--txd NAME] [--lod-dist N] [--hd-dist N] [--flags N] [--merge FILE]` | a type file declaring an archetype for every `.ydr`, `.ydd` entry and `.yft`, with the bounds read from the model, as CodeWalker's "New Archetype from YDR" does; `--merge` adds to an existing `.ytyp` |
 | `ymap from-menyoo <file.xml> -o FILE.ymap [--name NAME] [--lod-dist N] [--ytyp PATH]... [--no-recalc]` | a map from a Menyoo spooner XML, as CodeWalker's "Import Menyoo XML" makes it: props become entities, vehicles car generators, peds are left out; flags and extents worked out as `resource build` does |
@@ -645,6 +646,29 @@ collision bound.
 `build` warns of what CodeWalker accepts silently but the game may not: a
 shader parameter naming a texture that is not embedded (the game then looks
 it up in the archetype's texture dictionary) and a bone without a name.
+
+### Enhanced (Gen9) files for FiveM
+
+GTA V Enhanced stores `.ytd`, `.ydr`, `.ydd`, `.yft` and `.ypt` in another
+layout (resource versions 5, 159, 159, 171 and 71, against the legacy 13, 165,
+165, 162 and 68), which FiveM cannot load. The legacy game's own copy of an
+Enhanced-only model is often a ~1 KB placeholder (two triangles, a `blank`
+shader) that crashes the client the moment it is spawned, so the real file has
+to come from the Enhanced install:
+
+```sh
+rage extract "…/Grand Theft Auto V Enhanced/update/x64/dlcpacks/mpg9ec/dlc.rpf" '*s95*' -r -o enhanced --exe "…/GTA5_Enhanced.exe"
+rage resource info enhanced/…/s95.ytd                 # Edition: Enhanced (Gen9), with the textures as they will convert
+rage resource convert enhanced -o legacy [--dry-run]   # a folder keeps its layout inside -o; the input is never overwritten
+```
+
+`resource convert` handles `.ytd` so far; the other types are skipped with a
+note until their conversion exists (VIRUXE/rage-formats#13). It refuses what
+the legacy game cannot hold, naming the texture and why: a cube map or volume
+texture, a non-linear tile mode, or a format with no legacy twin (BC6H, 16-bit
+and float formats). The sRGB flag of BC1/2/3/7 and 8-bit RGBA textures is
+dropped, the pixel bytes are kept. Texture usage carries over; the legacy
+usage and extra flags have no Enhanced source and are written as 0.
 `--strict` turns the warnings into an error, and nothing is written. Where
 CodeWalker guesses, `build` stops with an error instead: an unknown bound
 type, a vertex row shorter than its layout, a `CompositeTransform` that is not
