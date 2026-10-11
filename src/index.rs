@@ -255,15 +255,26 @@ impl PedFiles {
         if later.ytd.is_some() { self.ytd = later.ytd; }
         if later.yft.is_some() { self.yft = later.yft; }
         for (hash, loc) in later.streamed {
-            self.streamed.retain(|(h, _)| *h != hash);
+            let extension = extension_of(&loc.inner_path);
+            self.streamed.retain(|(h, l)| !(*h == hash && extension_of(&l.inner_path) == extension));
             self.streamed.push((hash, loc));
         }
     }
 
-    /// The streamed file named `hash`, if the ped's folder holds one.
-    pub fn streamed_file(&self, hash: u32) -> Option<&EntryLoc> {
-        self.streamed.iter().find(|(h, _)| *h == hash).map(|(_, loc)| loc)
+    /// The streamed `.EXTENSION` file named `hash`, if the ped's folder
+    /// holds one. A component's `.ydd`, its cloth `.yld` and its `.ytd` can
+    /// share a name, so the extension tells them apart.
+    pub fn streamed_file(&self, hash: u32, extension: &str) -> Option<&EntryLoc> {
+        self.streamed
+            .iter()
+            .find(|(h, loc)| *h == hash && extension_of(&loc.inner_path).eq_ignore_ascii_case(extension))
+            .map(|(_, loc)| loc)
     }
+}
+
+/// `head_000_r.ydd` -> `ydd`, lowercase.
+fn extension_of(path: &str) -> String {
+    path.rsplit_once('.').map_or(String::new(), |(_, ext)| ext.to_lowercase())
 }
 
 /// What the index keeps of a `vehicles.meta` entry.
@@ -1193,13 +1204,15 @@ fn index_archive(archive: &Archive, archive_path: &Path, nested_rpfs: &[String],
             inner_path: file.path.clone(),
         };
 
+        // A `.ytd` falls through to the peds bookkeeping below whether or
+        // not the textures part is being built: parts are cached and rebuilt
+        // one at a time, so peds is often built without textures.
         if name_lower.ends_with(".ytd") {
-            if !textures {
-                continue;
+            if textures {
+                out.index.ytd_by_name.insert(rage_joaat(&stem), loc());
             }
-            out.index.ytd_by_name.insert(rage_joaat(&stem), loc());
-
-            if RESIDENT_DICTS.contains(&stem.as_str())
+            if textures
+                && RESIDENT_DICTS.contains(&stem.as_str())
                 && let Ok(data) = archive.extract(file, keys)
                 && let Ok(dict) = parse_ytd(&data)
             {
@@ -1480,8 +1493,9 @@ const MAGIC: u32 = 0x5850_4652; // "RPFX" little-endian
 // 8: one file per part, each carrying the archives' fingerprint; entries
 // written in key order. 9: archetype LOD distances. 10-11: archetype ytyp
 // bindings and ytyp locations. 12: the peds and vehicles parts. 13: the
-// world part.
-const FORMAT_VERSION: u32 = 13;
+// world part. 14: a peds part built without textures keeps its `.ytd`s, and
+// a streamed `.yld` no longer replaces the `.ydd` of the same name.
+const FORMAT_VERSION: u32 = 14;
 
 fn write_u32(buf: &mut Vec<u8>, v: u32) {
     buf.extend_from_slice(&v.to_le_bytes());
@@ -2093,13 +2107,40 @@ mod tests {
         assert_eq!(files.ydd, Some(loc("base.ydd")));
         assert_eq!(files.ytd, Some(loc("dlc.ytd")));
         assert_eq!(files.yft, Some(loc("dlc.yft")));
-        assert_eq!(files.streamed_file(1), Some(&loc("base/a.ydd")));
-        assert_eq!(files.streamed_file(2), Some(&loc("dlc/b.ydd")));
+        assert_eq!(files.streamed_file(1, "ydd"), Some(&loc("base/a.ydd")));
+        assert_eq!(files.streamed_file(2, "ydd"), Some(&loc("dlc/b.ydd")));
         assert_eq!(base.car_colors.len(), 1, "an empty colour list does not replace the base one");
         let mut update = GameIndex::default();
         update.car_colors.push(CarColorEntry { color: 2, name: "two".into(), metallic_id: 0 });
         base.merge(update);
         assert_eq!(base.car_colors[0].name, "two");
+    }
+
+    #[test]
+    fn a_peds_only_build_keeps_the_peds_dictionaries() {
+        // The textures part is cached on its own, so the peds part is often
+        // built without it: a ped's `.ytd`s must not depend on it.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("peds.rpf");
+        let mut builder = rpf_archive::RpfBuilder::for_version(rpf_archive::RpfVersion::V7, rpf_archive::RpfEncryption::None);
+        for name in ["a_x.ymt", "a_x.ydd", "a_x.ytd", "mp_x.ymt", "mp_x/head_000_r.ydd", "mp_x/head_diff_000_a_whi.ytd", "mp_x/uppr_000_u.ydd", "mp_x/uppr_000_u.yld"] {
+            builder.add_file(name, vec![0; 16]);
+        }
+        std::fs::write(&path, builder.build(None).unwrap()).unwrap();
+        let archive = Archive::open(&path, None).unwrap();
+        let mut out = Partial::default();
+        index_archive(&archive, &path, &[], None, Parts::PEDS, &mut out);
+
+        let ambient = &out.index.ped_files[&rage_joaat("a_x")];
+        assert_eq!(ambient.ytd.as_ref().map(|l| l.inner_path.as_str()), Some("a_x.ytd"));
+        let streamed = &out.index.ped_files[&rage_joaat("mp_x")];
+        assert!(streamed.streamed_file(rage_joaat("head_000_r"), "ydd").is_some());
+        assert!(streamed.streamed_file(rage_joaat("head_diff_000_a_whi"), "ytd").is_some(), "the streamed .ytd is kept");
+        // A component's cloth shares its drawable's name and must not replace it.
+        let uppr = rage_joaat("uppr_000_u");
+        assert_eq!(streamed.streamed_file(uppr, "ydd").map(|l| l.inner_path.as_str()), Some("mp_x/uppr_000_u.ydd"));
+        assert_eq!(streamed.streamed_file(uppr, "yld").map(|l| l.inner_path.as_str()), Some("mp_x/uppr_000_u.yld"));
+        assert!(out.index.ytd_by_name.is_empty(), "the textures part is still left alone");
     }
 
     #[test]

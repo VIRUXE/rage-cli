@@ -171,7 +171,7 @@ pub fn compose(index: &GameIndex, keys: Option<&GtaKeys>, name: &str, choices: &
         let drawable_hash = rage_joaat(&drawable_name.to_lowercase());
         let found = match own_drawables.iter().find(|entry| entry.hash == drawable_hash) {
             Some(entry) => Some(entry.drawable.clone()),
-            None => match files.streamed_file(drawable_hash) {
+            None => match files.streamed_file(drawable_hash, "ydd") {
                 Some(loc) => load(index, loc, keys, |data| parse_ydd(data))?.into_iter().next().map(|entry| entry.drawable),
                 None => None,
             },
@@ -187,7 +187,7 @@ pub fn compose(index: &GameIndex, keys: Option<&GtaKeys>, name: &str, choices: &
             let texture_hash = rage_joaat(&tex.to_lowercase());
             let held = textures.iter().chain(&streamed_textures).any(|t| t.name.eq_ignore_ascii_case(tex));
             if !held {
-                match files.streamed_file(texture_hash) {
+                match files.streamed_file(texture_hash, "ytd") {
                     Some(loc) => streamed_textures.extend(load(index, loc, keys, |data| parse_ytd(data))?),
                     None => composed.warnings.push(format!("{slot_name}: texture {tex} is in neither the ped's dictionary nor a streamed file")),
                 }
