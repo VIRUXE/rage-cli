@@ -84,28 +84,19 @@ pub struct Composed {
 }
 
 impl Composed {
-    /// One part per shown slot, each with its texture as the diffuse override,
-    /// all turned to face the `front` view.
+    /// One part per shown slot, each with its texture as the diffuse override.
+    /// Ped meshes are modelled facing -Y like props, so the renderer's `auto`
+    /// facing already puts the face in the `front` view.
     pub fn render_parts(&self) -> Vec<RenderPart<'_>> {
         self.drawables
             .iter()
-            .map(|(drawable, texture)| RenderPart { diffuse_override: texture.as_deref(), transform: facing_front(), ..RenderPart::new(drawable) })
+            .map(|(drawable, texture)| RenderPart { diffuse_override: texture.as_deref(), ..RenderPart::new(drawable) })
             .collect()
     }
 
     pub fn is_empty(&self) -> bool {
         self.drawables.is_empty()
     }
-}
-
-/// Ped meshes are modelled facing -Y, the opposite of vehicles, so the
-/// `front` view (which looks at a vehicle's grille) would show a ped's
-/// back: a half turn about Z puts the face in it.
-fn facing_front() -> rage_formats::Mat4 {
-    let mut m = rage_formats::Mat4::identity();
-    m.0[0] = -1.0;
-    m.0[5] = -1.0;
-    m
 }
 
 /// Reads and parses one of the ped's files.
