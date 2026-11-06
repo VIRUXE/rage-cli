@@ -461,10 +461,17 @@ pub fn hydrate(cat: &Catalog, item: ItemView, score: f64, via: &'static str) -> 
         )?;
         stmt.query_map([item.id], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?
     };
-    let start = archetype.as_ref().map(|a| a.txd_hash).filter(|h| *h != 0).or(item.txd_hash);
-    let txd_chain = match (item.kind, start) {
-        (Kind::Texture | Kind::Txd, _) | (_, None) => Vec::new(),
-        (_, Some(h)) => txd_chain(cat, h)?,
+    let txd_chain = if item.kind.is_model() {
+        let order = super::loader::resolution_order(cat, &item)?;
+        let mut name_of = cat.conn.prepare_cached("SELECT name FROM items WHERE kind = 'txd' AND hash = ?1 ORDER BY winner DESC LIMIT 1")?;
+        let mut named = Vec::with_capacity(order.len());
+        for hash in order {
+            let name: Option<String> = name_of.query_row([hash as i64], |r| r.get(0)).optional()?.flatten();
+            named.push((hash, name));
+        }
+        named
+    } else {
+        Vec::new()
     };
     let annotations = annotations_for(cat, item.id)?;
     Ok(Hit { item, score, via, archetype, referenced, txd_chain, annotations })

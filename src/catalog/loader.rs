@@ -2,7 +2,8 @@
 //! (and nested archives) stay open across a batch, texture dictionaries are
 //! cached raw under a byte budget, and a model's textures are resolved from
 //! the catalogue's own tables, in the order `screenshot` uses: embedded,
-//! then the archetype's dictionary and its parents, then the same-stem one.
+//! then the HD sibling (`+hidr` / `+hifr` / `+hidd` / `+hi`), then the
+//! archetype's dictionary and its parents, then the same-stem one.
 
 use anyhow::{Context, Result};
 use rusqlite::OptionalExtension;
@@ -14,8 +15,8 @@ use rage_formats::{parse_ytd, rage_joaat, YtdTexture};
 use rage_render::TextureSet;
 
 use super::search::{txd_chain, ItemView};
-use super::Catalog;
-use crate::index::RESIDENT_DICTS;
+use super::{Catalog, Kind};
+use crate::index::{hd_texture_names, ModelClass, RESIDENT_DICTS};
 use crate::rpf::{Archive, GtaKeys};
 
 /// Keeps archives open between reads.
@@ -123,10 +124,40 @@ impl TxdCache {
 }
 
 /// The texture dictionaries a model draws from, highest priority first:
-/// its archetype's dictionary (and parents), then the same-stem one (and
-/// parents). Mirrors `GameIndex::resolution_order`.
+/// its HD sibling (`+hidr` / `+hifr` / `+hidd` / `+hi`) and that sibling's
+/// parents, then the archetype's dictionary and its parents, then the
+/// same-stem one and its parents. Mirrors `GameIndex::resolution_order_for`.
 pub fn resolution_order(cat: &Catalog, item: &ItemView) -> Result<Vec<u32>> {
     let mut order = Vec::new();
+    let mut push_chain = |start: u32| -> Result<()> {
+        for (h, _) in txd_chain(cat, start)? {
+            if !order.contains(&h) {
+                order.push(h);
+            }
+        }
+        Ok(())
+    };
+
+    if item.kind.is_model() {
+        if let Some(stem) = model_file_stem(item) {
+            for name in hd_texture_names(&stem, model_class(item)) {
+                let hash = rage_joaat(&name);
+                if txd_exists(cat, hash)? {
+                    push_chain(hash)?;
+                }
+            }
+            // `police_hi.yft` is textured by `police.ytd`, not `police_hi.ytd`.
+            if let Some(base) = stem.strip_suffix("_hi") {
+                if !base.is_empty() {
+                    let hash = rage_joaat(base);
+                    if txd_exists(cat, hash)? {
+                        push_chain(hash)?;
+                    }
+                }
+            }
+        }
+    }
+
     let archetype_txd: Option<i64> = cat
         .conn
         .query_row(
@@ -137,13 +168,40 @@ pub fn resolution_order(cat: &Catalog, item: &ItemView) -> Result<Vec<u32>> {
         .optional()?;
     let starts = [archetype_txd.map(|h| h as u32), item.txd_hash];
     for start in starts.into_iter().flatten() {
-        for (h, _) in txd_chain(cat, start)? {
-            if !order.contains(&h) {
-                order.push(h);
-            }
-        }
+        push_chain(start)?;
     }
     Ok(order)
+}
+
+/// The archive file's stem (`prop_chair_02.ydr` -> `prop_chair_02`).
+/// Dictionary members share the `.ydd` file, so the HD dictionary is named
+/// after that file, not after the member.
+fn model_file_stem(item: &ItemView) -> Option<String> {
+    let stem = item.entry_name.rsplit_once('.').map(|(s, _)| s).unwrap_or(item.entry_name.as_str());
+    let stem = stem.trim().to_lowercase();
+    if stem.is_empty() { None } else { Some(stem) }
+}
+
+fn model_class(item: &ItemView) -> ModelClass {
+    let ext = item.entry_name.rsplit_once('.').map(|(_, ext)| ext).unwrap_or("");
+    match ext {
+        "yft" => ModelClass::Fragment,
+        "ydd" => ModelClass::Dictionary,
+        "ydr" => ModelClass::Drawable,
+        _ => match item.kind {
+            Kind::Fragment => ModelClass::Fragment,
+            Kind::Dictionary | Kind::DdEntry => ModelClass::Dictionary,
+            _ => ModelClass::Drawable,
+        },
+    }
+}
+
+fn txd_exists(cat: &Catalog, hash: u32) -> Result<bool> {
+    let hit: Option<i64> = cat
+        .conn
+        .query_row("SELECT 1 FROM items WHERE kind = 'txd' AND hash = ?1 LIMIT 1", [hash as i64], |r| r.get(0))
+        .optional()?;
+    Ok(hit.is_some())
 }
 
 /// Decoded external texture layers for one resolution order, reused

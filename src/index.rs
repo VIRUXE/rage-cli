@@ -333,6 +333,52 @@ pub struct KitEntry {
 
 pub(crate) const RESIDENT_DICTS: [&str; 2] = ["mapdetail", "vehshare"];
 
+/// Which HD texture-dictionary suffix a model file uses.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ModelClass {
+    /// `.ydr` — external dictionary is `name+hidr.ytd`.
+    Drawable,
+    /// `.yft` — external dictionary is `name+hifr.ytd`.
+    Fragment,
+    /// `.ydd` — external dictionary is `name+hidd.ytd`.
+    Dictionary,
+}
+
+/// HD texture-dictionary names stored beside `stem`, highest detail first.
+///
+/// The game files a drawable's external textures as `name+hidr`, a fragment's
+/// as `name+hifr`, a drawable dictionary's as `name+hidd`, and the HD half of
+/// a dictionary (vehicles included) as `name+hi`. A `*_hi` model also tries
+/// the unsuffixed base, which is the name those dictionaries are filed under.
+/// The stem itself is not included; callers already walk that hash.
+pub fn hd_texture_names(stem: &str, class: ModelClass) -> Vec<String> {
+    let stem = stem.trim().to_lowercase();
+    if stem.is_empty() {
+        return Vec::new();
+    }
+    let mut bases = vec![stem.clone()];
+    if let Some(base) = stem.strip_suffix("_hi") {
+        if !base.is_empty() {
+            bases.push(base.to_string());
+        }
+    }
+    let suffixes: &[&str] = match class {
+        ModelClass::Drawable => &["+hidr", "+hi"],
+        ModelClass::Fragment => &["+hifr", "+hi"],
+        ModelClass::Dictionary => &["+hidd", "+hi"],
+    };
+    let mut out = Vec::new();
+    for base in &bases {
+        for suffix in suffixes {
+            let name = format!("{base}{suffix}");
+            if !out.contains(&name) {
+                out.push(name);
+            }
+        }
+    }
+    out
+}
+
 /// CodeWalker's `GameFileCache.InitGtxds` matches these names exactly
 /// (`entry.NameLower == "..."`), not as a suffix — a filename like
 /// `dlc_gtxd.ymt` is deliberately not picked up, matching the reference.
@@ -498,19 +544,35 @@ impl GameIndex {
     /// keeps this a cycle guard rather than a repeat of the same chain:
     /// CodeWalker has no such guard anywhere in this walk.
     pub fn resolution_order(&self, file_stem_hash: u32) -> Vec<u32> {
+        self.resolution_order_for(file_stem_hash, &[])
+    }
+
+    /// Like [`resolution_order`](Self::resolution_order), but `leading`
+    /// dictionaries (a model's `+hidr` / `+hifr` / `+hidd` / `+hi` siblings)
+    /// are walked first, so the model's own textures beat a shared
+    /// archetype dictionary that reused the same texture name.
+    pub fn resolution_order_for(&self, file_stem_hash: u32, leading: &[u32]) -> Vec<u32> {
         const MAX_HOPS: usize = 64;
 
         // The archetype hash is usually just the drawable's own file stem
         // (CodeWalker's `ModelForm.cs` fallback for a model with no known
         // archetype): try that hash's texture dictionary directly, and also
         // check whether an archetype named it explicitly.
-        let mut starts = Vec::with_capacity(2);
+        let mut starts = Vec::with_capacity(leading.len() + 2);
+        for &hash in leading {
+            if !starts.contains(&hash) {
+                starts.push(hash);
+            }
+        }
         if let Some(&txd_hash) = self.archetype_txd.get(&file_stem_hash)
             && txd_hash != 0
+            && !starts.contains(&txd_hash)
         {
             starts.push(txd_hash);
         }
-        starts.push(file_stem_hash);
+        if !starts.contains(&file_stem_hash) {
+            starts.push(file_stem_hash);
+        }
 
         let mut seen = std::collections::HashSet::new();
         let mut order = Vec::new();
@@ -2402,6 +2464,39 @@ mod tests {
 
     fn rel(child: &str, parent: &str) -> rage_formats::TxdRelationship {
         rage_formats::TxdRelationship { child: child.to_string(), parent: parent.to_string() }
+    }
+
+    #[test]
+    fn hd_texture_names_follow_the_file_kind() {
+        assert_eq!(
+            hd_texture_names("prop_chair_02", ModelClass::Drawable),
+            vec!["prop_chair_02+hidr".to_string(), "prop_chair_02+hi".to_string()]
+        );
+        assert_eq!(
+            hd_texture_names("asea_stbomb5", ModelClass::Fragment),
+            vec!["asea_stbomb5+hifr".to_string(), "asea_stbomb5+hi".to_string()]
+        );
+        assert_eq!(
+            hd_texture_names("police_hi", ModelClass::Fragment),
+            vec![
+                "police_hi+hifr".to_string(),
+                "police_hi+hi".to_string(),
+                "police+hifr".to_string(),
+                "police+hi".to_string(),
+            ]
+        );
+        assert_eq!(
+            hd_texture_names("props", ModelClass::Dictionary),
+            vec!["props+hidd".to_string(), "props+hi".to_string()]
+        );
+    }
+
+    #[test]
+    fn resolution_order_tries_leading_dicts_before_the_archetype() {
+        let mut index = GameIndex::default();
+        index.archetype_txd.insert(100, 200);
+        let order = index.resolution_order_for(100, &[50]);
+        assert_eq!(order, vec![50, 200, 100]);
     }
 
     #[test]

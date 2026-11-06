@@ -5,7 +5,7 @@ use rage_formats::{encode_image, rage_joaat, wheel_slot, DrawableEntry, ImageFor
 use rage_render::{compose_sheet, render_parts, RenderOptions, RenderPart, SheetItem, SheetOptions,
                   TextureSet, View, Facing};
 
-use crate::index::{GameIndex, Parts};
+use crate::index::{hd_texture_names, GameIndex, ModelClass, Parts};
 use crate::peds::{self, SlotChoice};
 use crate::resources::{drawable_kind_of, embedded_textures_of, file_stem, load_renderables, load_texture_dictionary,
                        parse_renderables, sanitize, Loaded};
@@ -458,9 +458,18 @@ pub(crate) fn renderables(loaded: &Loaded) -> Vec<Renderable<'_>> {
     }
 }
 
+fn class_from_path(path: &str) -> ModelClass {
+    match path.rsplit_once('.').map(|(_, ext)| ext).unwrap_or("").to_ascii_lowercase().as_str() {
+        "yft" => ModelClass::Fragment,
+        "ydd" => ModelClass::Dictionary,
+        _ => ModelClass::Drawable,
+    }
+}
+
 /// Builds the texture set: `embedded` first, then one layer per `--ytd`,
-/// then whatever the game-wide index resolves for `texture_stem` (or, with
-/// no index available, the same-stem guess this always made in `archive`).
+/// then the model's HD sibling dictionaries (`+hidr` / `+hifr` / `+hidd` /
+/// `+hi`), then whatever the game-wide index resolves for `texture_stem`
+/// (or, with no index available, those same names inside `archive`).
 fn build_texture_set(
     archive: Option<&Archive>,
     ytd_specs: &[String],
@@ -468,6 +477,7 @@ fn build_texture_set(
     embedded: &[rage_formats::YtdTexture],
     keys: Option<&GtaKeys>,
     index: Option<&GameIndex>,
+    class: Option<ModelClass>,
     log: &mut Log,
 ) -> TextureSet {
     let mut set = TextureSet::new();
@@ -492,9 +502,17 @@ fn build_texture_set(
 
     let Some(index) = index else {
         // No index available (--no-index, or no --exe/--keys to build one
-        // from): fall back to the one guess rpf-cli has always made — a
-        // same-name .ytd in this same archive.
+        // from): the HD sibling in this same archive, then the same-name .ytd.
         let Some(archive) = archive else { return set };
+        if let Some(class) = class {
+            for name in hd_texture_names(texture_stem, class) {
+                let filename = format!("{name}.ytd");
+                if let Ok(textures) = load_texture_dictionary(archive, &filename, keys) {
+                    log.say(format!("Using texture dictionary {} ({} texture(s))", filename, textures.len()));
+                    report_failed(&set.push_layer(&textures), &filename);
+                }
+            }
+        }
         let fallback = format!("{texture_stem}.ytd");
         match load_texture_dictionary(archive, &fallback, keys) {
             Ok(textures) => {
@@ -506,11 +524,34 @@ fn build_texture_set(
         return set;
     };
 
-    // The index-driven order (archetype's own texture dictionary, then the
-    // same-stem guess, then any parent chain) is a strict superset of the
-    // no-index fallback above, searched game-wide instead of one archive.
-    let stem_hash = rage_joaat(&texture_stem.to_lowercase());
-    for txd_hash in index.resolution_order(stem_hash) {
+    // HD siblings first, then the archetype's dictionary, then the same-stem
+    // guess, each with its parent chain. Game-wide, so a dictionary that
+    // lives in another archive is still found.
+    let stem_l = texture_stem.to_lowercase();
+    let mut leading = Vec::new();
+    if let Some(class) = class {
+        for name in hd_texture_names(&stem_l, class) {
+            let hash = rage_joaat(&name);
+            if index.ytd_by_name.contains_key(&hash) {
+                leading.push(hash);
+            }
+        }
+        if let Some(base) = stem_l.strip_suffix("_hi") {
+            if !base.is_empty() {
+                let hash = rage_joaat(base);
+                if index.ytd_by_name.contains_key(&hash) && !leading.contains(&hash) {
+                    leading.push(hash);
+                }
+            }
+        }
+    }
+    let stem_hash = rage_joaat(&stem_l);
+    let order = if leading.is_empty() {
+        index.resolution_order(stem_hash)
+    } else {
+        index.resolution_order_for(stem_hash, &leading)
+    };
+    for txd_hash in order {
         let Some(loc) = index.ytd_by_name.get(&txd_hash) else {
             log::debug!("no .ytd for txd hash {txd_hash:08X} in the resolution order");
             continue;
@@ -642,7 +683,7 @@ fn run_ped(args: &ScreenshotArgs, ped: &str, keys: Option<&GtaKeys>, index: Opti
     }
 
     let stem = composed.name.to_lowercase();
-    let mut textures = build_texture_set(None, &args.ytd, &stem, &composed.textures, keys, Some(index), log);
+    let mut textures = build_texture_set(None, &args.ytd, &stem, &composed.textures, keys, Some(index), None, log);
     let entries = vec![Renderable {
         label: composed.name.clone(),
         hash: rage_joaat(&stem),
@@ -660,14 +701,14 @@ fn run_model(args: &ScreenshotArgs, keys: Option<&GtaKeys>, index: Option<&GameI
     // The model's bytes and name, the archive it came from (none for
     // --vehicle), the stem images are named by, and the vehicle name
     // textures and paint are looked up by.
-    let (archive, loaded, stem, vehicle_name) = if let Some(name) = &args.vehicle {
+    let (archive, loaded, stem, vehicle_name, class) = if let Some(name) = &args.vehicle {
         let index = index.context("--vehicle needs the game index: pass --exe or set GTAV_PATH")?;
         let model = vehicles::resolve_vehicle(index, name, args.hi)?;
         warnings.extend(model.warnings.iter().cloned());
         let data = index.load_bytes(&model.loc, keys)?;
         let loaded = parse_renderables(&model.loc.inner_path, drawable_kind_of(&model.loc.inner_path)?, &data)?;
         log.say(format!("Rendering {} ({})", model.stem, model.loc.inner_path));
-        (None, loaded, model.stem.clone(), model.name.clone())
+        (None, loaded, model.stem.clone(), model.name.clone(), class_from_path(&model.loc.inner_path))
     } else {
         let archive_path = args.archive.as_ref().expect("clap requires an archive without --ped/--vehicle");
         let file = args.file.as_ref().expect("clap requires a file with an archive");
@@ -675,18 +716,20 @@ fn run_model(args: &ScreenshotArgs, keys: Option<&GtaKeys>, index: Option<&GameI
         archive.require_keys(keys)?;
         let mut loaded = load_renderables(&archive, file, keys)?;
         let mut stem = file_stem(file);
+        let mut class = class_from_path(file);
         if args.hi {
             match vehicles::hi_model_bytes(&archive, &stem, index, keys)? {
                 Some((hi_stem, data)) => {
                     loaded = parse_renderables(&format!("{hi_stem}.yft"), rage_formats::DrawableKind::Yft, &data)?;
                     log.say(format!("Rendering {hi_stem}.yft"));
                     stem = hi_stem;
+                    class = ModelClass::Fragment;
                 }
                 None => warnings.push(format!("no {}_hi.yft in the archive or the game; rendering {file}", stem.to_lowercase())),
             }
         }
         let vehicle_name = vehicles::base_name(&stem);
-        (Some(archive), loaded, stem, vehicle_name)
+        (Some(archive), loaded, stem, vehicle_name, class)
     };
     for warning in warnings {
         log.warn(warning);
@@ -704,7 +747,7 @@ fn run_model(args: &ScreenshotArgs, keys: Option<&GtaKeys>, index: Option<&GameI
     }
 
     let embedded: Vec<_> = embedded_textures_of(loaded.drawables()).into_iter().cloned().collect();
-    let mut textures = build_texture_set(archive.as_ref(), &args.ytd, &vehicle_name, &embedded, keys, index, log);
+    let mut textures = build_texture_set(archive.as_ref(), &args.ytd, &vehicle_name, &embedded, keys, index, Some(class), log);
 
     if let Some(livery) = args.livery {
         let swaps = vehicles::apply_livery(&mut textures, loaded.drawables(), livery);

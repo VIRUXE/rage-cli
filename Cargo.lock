@@ -1881,9 +1881,8 @@ dependencies = [
 
 [[package]]
 name = "rage-render"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "81b7cddfefb09d314dff4183cb095a608d8d9e7d3bdbf52e4f225f7314815a06"
+version = "0.5.1"
+source = "git+https://github.com/VIRUXE/rage-render?tag=v0.5.1#903a133ae2120262635390c23dca2fb5a8a62dca"
 dependencies = [
  "anyhow",
  "console_error_panic_hook",
