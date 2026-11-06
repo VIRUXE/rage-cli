@@ -17,7 +17,7 @@ use rage_formats::{parse_drawables, parse_ytd, parse_yft, DrawableKind, YtdTextu
 use rage_render::image::{Rgba, RgbaImage};
 use rage_render::{compose_sheet, draw_text, render_parts, text_width, RenderOptions, SheetItem, SheetOptions as GridOptions, View, GLYPH_H};
 
-use super::loader::{resident_for, resolution_order, texture_set_for, DecodedChain, EntryLoader, TxdCache};
+use super::loader::{fallback_for, resident_for, resolution_order, texture_set_for, DecodedChain, EntryLoader, TxdCache};
 use super::scan::hex_digest;
 use super::search::{load_item, ItemView};
 use super::{now_secs, Catalog, Kind};
@@ -51,6 +51,11 @@ pub struct PacketSummary {
 
 const MAX_CHILDREN: usize = 16;
 const SHEET_BG: [u8; 4] = [32, 32, 32, 255];
+/// Ground for pale models, distinct from the sheet's own frame colour.
+const DARK_BG: [u8; 4] = [64, 64, 64, 255];
+/// Mean luminance gap between model and ground below which the model counts
+/// as hard to see.
+const MIN_CONTRAST: f32 = 56.0;
 const LABEL: [u8; 4] = [255, 255, 255, 255];
 
 /// A selection key (packet-issued key or catalogue key) paired with why it
@@ -345,6 +350,24 @@ fn response_schema(pid: &str) -> json::JsonValue {
     }
 }
 
+fn luma(p: [u8; 4]) -> f32 {
+    0.299 * p[0] as f32 + 0.587 * p[1] as f32 + 0.114 * p[2] as f32
+}
+
+/// True when the model's pixels, across every view, sit on average within
+/// `MIN_CONTRAST` luminance of the ground. Empty renders are not low contrast.
+fn low_contrast(rendered: &[(View, RgbaImage, rage_render::RenderReport)], background: [u8; 4]) -> bool {
+    let ground = luma(background);
+    let (mut sum, mut count) = (0.0f64, 0u64);
+    for (_, img, _) in rendered {
+        for p in img.pixels().filter(|p| p.0 != background) {
+            sum += (luma(p.0) - ground).abs() as f64;
+            count += 1;
+        }
+    }
+    count > 0 && ((sum / count as f64) as f32) < MIN_CONTRAST
+}
+
 fn round2(v: f64) -> f64 {
     (v * 100.0).round() / 100.0
 }
@@ -375,21 +398,38 @@ fn model_tile(
 
     let embedded: Vec<YtdTexture> = embedded_textures_of(loaded.drawables()).into_iter().cloned().collect();
     let options = RenderOptions { width: opts.cell, height: opts.cell, view: opts.views[0], cluster_framing: true, facing: opts.facing, ..Default::default() };
-    let set = texture_set_for(cat, loader, txds, shared, order, &embedded)?;
+    let mut set = texture_set_for(cat, loader, txds, shared, order, &embedded)?;
     let mut rendered = render_parts(&chosen.parts, &set, &options, &opts.views)?;
     let mut missing = rendered.first().map(|r| r.2.missing_textures.clone()).unwrap_or_default();
     if !missing.is_empty() {
         let resident = resident_for(cat, &missing)?;
         if !resident.is_empty() {
-            let mut set = set.into_owned();
             for h in resident {
                 if let Some(t) = txds.get(cat, loader, h)? {
-                    set.push_layer(&t);
+                    set.to_mut().push_layer(&t);
                 }
             }
             rendered = render_parts(&chosen.parts, &set, &options, &opts.views)?;
             missing = rendered.first().map(|r| r.2.missing_textures.clone()).unwrap_or_default();
         }
+        // Still missing: shadowed base copies of patched dictionaries, then
+        // any dictionary holding a texture of that exact name.
+        let fallback = if missing.is_empty() { Vec::new() } else { fallback_for(cat, order, &missing)? };
+        if !fallback.is_empty() {
+            for id in fallback {
+                if let Some(t) = txds.get_item(cat, loader, id)? {
+                    set.to_mut().push_layer(&t);
+                }
+            }
+            rendered = render_parts(&chosen.parts, &set, &options, &opts.views)?;
+            missing = rendered.first().map(|r| r.2.missing_textures.clone()).unwrap_or_default();
+        }
+    }
+    // Pale props (white-textured markers, plaster, paper) all but vanish on
+    // the light default ground; draw those on a dark one instead.
+    if low_contrast(&rendered, options.background) {
+        let dark = RenderOptions { background: DARK_BG, ..options };
+        rendered = render_parts(&chosen.parts, &set, &dark, &opts.views)?;
     }
     let lod = rendered.first().map(|r| format!("{:?}", r.2.lod)).unwrap_or_default();
     let items: Vec<SheetItem<'_>> = rendered.iter().map(|(v, img, _)| SheetItem { label: v.label().to_string(), image: img }).collect();

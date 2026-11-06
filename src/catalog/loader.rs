@@ -75,13 +75,37 @@ impl<'k> EntryLoader<'k> {
 /// bulk when they pass `budget` bytes.
 pub struct TxdCache {
     raw: HashMap<u32, Option<Rc<Vec<YtdTexture>>>>,
+    by_item: HashMap<i64, Option<Rc<Vec<YtdTexture>>>>,
     bytes: usize,
     budget: usize,
 }
 
 impl TxdCache {
     pub fn new(budget: usize) -> Self {
-        TxdCache { raw: HashMap::new(), bytes: 0, budget }
+        TxdCache { raw: HashMap::new(), by_item: HashMap::new(), bytes: 0, budget }
+    }
+
+    /// One specific `.ytd` copy by catalogue item id, winner or not.
+    pub fn get_item(&mut self, cat: &Catalog, loader: &mut EntryLoader, id: i64) -> Result<Option<Rc<Vec<YtdTexture>>>> {
+        if let Some(hit) = self.by_item.get(&id) {
+            return Ok(hit.clone());
+        }
+        let sql = "SELECT a.path, i.nested, i.inner_path FROM items i JOIN archives a ON a.id = i.archive_id WHERE i.id = ?1 AND i.kind = 'txd'";
+        let row: Option<(String, String, String)> = cat.conn.query_row(sql, [id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).optional()?;
+        let loaded = row.and_then(|(top, nested, inner)| load_ytd(loader, &top, &nested, &inner));
+        self.account(&loaded);
+        self.by_item.insert(id, loaded.clone());
+        Ok(loaded)
+    }
+
+    fn account(&mut self, loaded: &Option<Rc<Vec<YtdTexture>>>) {
+        let size: usize = loaded.as_ref().map(|t| t.iter().map(|x| x.pixel_data.len()).sum()).unwrap_or(0);
+        if self.bytes + size > self.budget {
+            self.raw.clear();
+            self.by_item.clear();
+            self.bytes = 0;
+        }
+        self.bytes += size;
     }
 
     /// The winning `.ytd` for `hash`, or `None` when the catalogue has none
@@ -99,27 +123,21 @@ impl TxdCache {
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .optional()?;
-        let loaded = match row {
-            None => None,
-            Some((top, nested, inner)) => {
-                let nested: Vec<String> = if nested.is_empty() { Vec::new() } else { nested.split("//").map(str::to_string).collect() };
-                match loader.bytes(&top, &nested, &inner).and_then(|d| parse_ytd(&d)) {
-                    Ok(textures) => Some(Rc::new(textures)),
-                    Err(e) => {
-                        log::debug!("catalog: texture dictionary {inner} unreadable: {e}");
-                        None
-                    }
-                }
-            }
-        };
-        let size: usize = loaded.as_ref().map(|t| t.iter().map(|x| x.pixel_data.len()).sum()).unwrap_or(0);
-        if self.bytes + size > self.budget {
-            self.raw.clear();
-            self.bytes = 0;
-        }
-        self.bytes += size;
+        let loaded = row.and_then(|(top, nested, inner)| load_ytd(loader, &top, &nested, &inner));
+        self.account(&loaded);
         self.raw.insert(hash, loaded.clone());
         Ok(loaded)
+    }
+}
+
+fn load_ytd(loader: &mut EntryLoader, top: &str, nested: &str, inner: &str) -> Option<Rc<Vec<YtdTexture>>> {
+    let nested: Vec<String> = if nested.is_empty() { Vec::new() } else { nested.split("//").map(str::to_string).collect() };
+    match loader.bytes(top, &nested, inner).and_then(|d| parse_ytd(&d)) {
+        Ok(textures) => Some(Rc::new(textures)),
+        Err(e) => {
+            log::debug!("catalog: texture dictionary {inner} unreadable: {e}");
+            None
+        }
     }
 }
 
@@ -262,6 +280,33 @@ pub fn resident_for(cat: &Catalog, missing: &[String]) -> Result<Vec<u32>> {
             let dict = dict as u32;
             if !out.contains(&dict) {
                 out.push(dict);
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Dictionary copies (item ids) that hold textures still `missing` after the
+/// resolution order and the resident dictionaries, best first per texture:
+///
+/// 1. a shadowed (non-winning) copy of a dictionary in `order`. A DLC patch
+///    that replaces a dictionary can drop or rename a texture that the
+///    unpatched model still names (`prop_bankdoors1.ytd` in patchday2ng
+///    renames `prop_door_ornate_01` to `..._hei`); the base copy still has it.
+/// 2. any other dictionary with a texture of exactly that name, winners and
+///    later-loading archives first.
+pub fn fallback_for(cat: &Catalog, order: &[u32], missing: &[String]) -> Result<Vec<i64>> {
+    let mut out = Vec::new();
+    let sql = "SELECT p.id, p.hash, p.winner FROM items t JOIN items p ON p.id = t.parent_id JOIN archives a ON a.id = p.archive_id
+               WHERE t.kind = 'texture' AND t.hash = ?1 AND p.kind = 'txd' ORDER BY p.winner DESC, a.load_rank DESC";
+    let mut stmt = cat.conn.prepare_cached(sql)?;
+    for name in missing {
+        let h = rage_joaat(&name.to_lowercase()) as i64;
+        let hits: Vec<(i64, u32, bool)> = stmt.query_map([h], |r| Ok((r.get(0)?, r.get::<_, i64>(1)? as u32, r.get(2)?)))?.collect::<rusqlite::Result<_>>()?;
+        let shadowed = hits.iter().find(|(_, dict, winner)| !winner && order.contains(dict));
+        if let Some((id, _, _)) = shadowed.or(hits.first()) {
+            if !out.contains(id) {
+                out.push(*id);
             }
         }
     }
