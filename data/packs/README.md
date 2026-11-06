@@ -10,9 +10,13 @@ review (description, shape, material, condition, likely use, tags,
 confidence, missing views, limitations, who reviewed it). It holds no
 images, no archive paths and no game data.
 
+Packs are release assets. They are not in the git tree.
+
 ```sh
+curl -fsSL -o gta5-3889-2026-09-27.json \
+  https://github.com/VIRUXE/rage-cli/releases/download/v0.28.0/gta5-3889-2026-09-27.json
 rage catalog build
-rage catalog pack import data/packs/gta5-3889-2026-09-27.json
+rage catalog pack import gta5-3889-2026-09-27.json
 rage catalog search blackjack table
 ```
 
@@ -25,7 +29,7 @@ on your own machine, and are not re-exported unless `--include-shared`.
 
 | File | Game build | Reviews | Reviewer | Made |
 |---|---|---|---|---|
-| `gta5-3889-2026-09-27.json` | 3889 (legacy PC) | 4,153 | agent: gemini-3.8-flash-low via agy (3,806), claude-sonnet-5 via Claude Code (189), gemini-3.8-flash-medium pilot (158) | 2026-09-27 |
+| [`gta5-3889-2026-09-27.json`](https://github.com/VIRUXE/rage-cli/releases/download/v0.28.0/gta5-3889-2026-09-27.json) | 3889 (legacy PC) | 4,153 | agent: gemini-3.8-flash-low via agy (3,806), claude-sonnet-5 via Claude Code (189), gemini-3.8-flash-medium pilot (158) | 2026-09-27 |
 
 ### How the 2026-09-27 pack was made
 

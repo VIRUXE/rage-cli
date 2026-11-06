@@ -1447,6 +1447,9 @@ To cut a release:
    `release` workflow, which builds the Linux and Windows binaries,
    publishes a `SHA256SUMS` for them, and attaches all three to that
    release.
+4. Attach catalog packs with `gh release upload vX.Y.Z <pack>.json`.
+   Packs are not committed. `SHA256SUMS` lists only the two binaries;
+   `rage update` ignores every other asset.
 
 The asset names (`rage-linux-x86_64`, `rage-windows-x86_64.exe`) and the
 `vX.Y.Z` tag shape are a contract with `rage update`; renaming either breaks

@@ -21,3 +21,6 @@ target/
 /test_archives
 
 /dist
+
+# Review packs ship as GitHub release assets, not in the tree.
+/data/packs/*.json
