@@ -232,6 +232,10 @@ pub struct ModelArgs {
     #[arg(long, value_name = "PX", value_parser = clap::value_parser!(u32).range(16..=2048))]
     pub thumb: Option<u32>,
 
+    /// What the --thumb preview is drawn on: sky (a blue gradient), grey, or #rrggbb
+    #[arg(long, default_value = "sky", value_parser = parse_thumb_background, value_name = "BACKGROUND")]
+    pub thumb_background: crate::catalog::sheet::ThumbBackground,
+
     /// Skip items whose <id>.glb already exists in the output directory
     #[arg(long)]
     pub skip_existing: bool,
@@ -695,6 +699,14 @@ pub fn sheet_json(summary: &crate::catalog::sheet::PacketSummary) -> json::JsonV
     }
 }
 
+fn parse_thumb_background(value: &str) -> std::result::Result<crate::catalog::sheet::ThumbBackground, String> {
+    use crate::catalog::sheet::ThumbBackground;
+    if value.eq_ignore_ascii_case("sky") {
+        return Ok(ThumbBackground::Sky);
+    }
+    crate::commands::screenshot::parse_background(value).map(ThumbBackground::Solid).map_err(|e| format!("{e}, or 'sky'"))
+}
+
 fn run_model(args: &ModelArgs, db: &Path, keys: Option<&GtaKeys>) -> Result<()> {
     let cat = Catalog::open_existing(db)?;
     let selection: Vec<String> = match &args.ids {
@@ -721,7 +733,8 @@ fn run_model(args: &ModelArgs, db: &Path, keys: Option<&GtaKeys>) -> Result<()> 
         bail!("nothing selected");
     }
     let glb = rage_render::GlbOptions { lod: args.lod, facing: args.facing, paint: None, max_texture: args.max_texture, jpeg_quality: args.quality };
-    let (written, skipped) = crate::catalog::sheet::export_models(&cat, keys, items, &args.output, &glb, args.thumb, args.texture_budget << 20)?;
+    let thumb = args.thumb.map(|px| (px, args.thumb_background));
+    let (written, skipped) = crate::catalog::sheet::export_models(&cat, keys, items, &args.output, &glb, thumb, args.texture_budget << 20)?;
     if args.json {
         let mut models = json::JsonValue::new_array();
         for m in &written {

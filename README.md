@@ -266,7 +266,7 @@ index uses.
 | `catalog info [--json]` | database path, size, build, row and winner counts per kind, parse failures, annotation/packet/embedding counts |
 | `catalog sheet ...` | blind numbered contact sheets and a `packet.json` for a reviewer |
 | `catalog annotate ...` | import a reviewer's descriptions, checked against the tile image hashes |
-| `catalog model [WORDS...\|--ids FILE\|--key KEY] -o DIR [--thumb PX] [--max-texture 1024] [--quality 85] [--lod high] [--facing auto] [--skip-existing] [--limit 64] [--json]` | export models as `<id>.glb` with their textures, resolved as `sheet` resolves them, Y-up and facing +Z; `--thumb` adds an iso `<id>.jpg` |
+| `catalog model [WORDS...\|--ids FILE\|--key KEY] -o DIR [--thumb PX] [--thumb-background sky\|grey\|#rrggbb] [--max-texture 1024] [--quality 85] [--lod high] [--facing auto] [--skip-existing] [--limit 64] [--json]` | export models as `<id>.glb` with their textures, resolved as `sheet` resolves them, Y-up and facing +Z; `--thumb` adds an iso `<id>.jpg`, on a sky gradient by default |
 | `catalog pack export\|import ...` | text-only annotation packs |
 | `catalog embed ...` | local text embeddings (needs a build with `--features semantic`) |
 
@@ -887,7 +887,8 @@ rage catalog model --ids reviewed.txt -o site/models --thumb 320 --skip-existing
 
 Models are turned Y-up with their front on +Z; opaque textures are JPEG and
 alpha ones PNG, downscaled to `--max-texture`. `--thumb` also renders an iso
-preview from the same model and textures. A prop takes about a tenth of a
+preview from the same model and textures, on a blue sky gradient unless
+`--thumb-background` names a solid colour. A prop takes about a tenth of a
 second; ten thousand reviewed props export to about 2.7 GB with thumbnails.
 
 ### Agents over MCP

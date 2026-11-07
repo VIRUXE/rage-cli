@@ -467,6 +467,34 @@ fn model_tile(
     Ok((image, Tile { item: item.clone(), png: Vec::new(), sha: String::new(), views, missing, lod: lod.to_lowercase() }))
 }
 
+/// What a `catalog model --thumb` preview is drawn on.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ThumbBackground {
+    /// A vertical sky gradient, deep blue at the top to pale at the bottom.
+    Sky,
+    /// One colour, with pale models moved to a dark ground as on the review sheets.
+    Solid([u8; 4]),
+}
+
+const SKY_ZENITH: [f32; 3] = [58.0, 112.0, 184.0];
+const SKY_HORIZON: [f32; 3] = [198.0, 220.0, 238.0];
+
+/// Composites a render drawn on a transparent ground over the sky gradient.
+fn over_sky(image: &RgbaImage) -> RgbaImage {
+    let span = image.height().saturating_sub(1).max(1) as f32;
+    let mut out = image.clone();
+    for (_, y, pixel) in out.enumerate_pixels_mut() {
+        let t = y as f32 / span;
+        let alpha = pixel.0[3] as f32 / 255.0;
+        for c in 0..3 {
+            let sky = SKY_ZENITH[c] + (SKY_HORIZON[c] - SKY_ZENITH[c]) * t;
+            pixel.0[c] = (pixel.0[c] as f32 * alpha + sky * (1.0 - alpha)).round() as u8;
+        }
+        pixel.0[3] = 255;
+    }
+    out
+}
+
 /// What `catalog model` wrote for one item.
 pub struct ModelExport {
     pub item: ItemView,
@@ -482,7 +510,7 @@ pub struct ModelExport {
 /// `thumb` an iso preview `<id>.jpg` of that size drawn from the same model
 /// and textures. Items that fail are returned with the reason instead of
 /// stopping the run.
-pub fn export_models(cat: &Catalog, keys: Option<&GtaKeys>, items: Vec<ItemView>, out_dir: &Path, glb: &GlbOptions, thumb: Option<u32>, texture_budget: usize) -> Result<(Vec<ModelExport>, SkipList)> {
+pub fn export_models(cat: &Catalog, keys: Option<&GtaKeys>, items: Vec<ItemView>, out_dir: &Path, glb: &GlbOptions, thumb: Option<(u32, ThumbBackground)>, texture_budget: usize) -> Result<(Vec<ModelExport>, SkipList)> {
     let (items, mut skipped) = expand(cat, items)?;
     std::fs::create_dir_all(out_dir).with_context(|| format!("failed to create {}", out_dir.display()))?;
     let mut orders: Vec<(ItemView, Vec<u32>)> = Vec::with_capacity(items.len());
@@ -509,15 +537,23 @@ pub fn export_models(cat: &Catalog, keys: Option<&GtaKeys>, items: Vec<ItemView>
     for (item, order) in orders {
         let finish = |parts: &[RenderPart<'_>], set: &TextureSet, _: ()| {
             let (bytes, report) = export_glb(parts, set, glb)?;
-            let Some(px) = thumb else { return Ok((bytes, report, None)) };
-            let options = RenderOptions { width: px, height: px, view: View::Iso, cluster_framing: true, facing: glb.facing, lod: glb.lod, ..Default::default() };
+            let Some((px, ground)) = thumb else { return Ok((bytes, report, None)) };
+            let background = match ground {
+                ThumbBackground::Sky => [0, 0, 0, 0],
+                ThumbBackground::Solid(colour) => colour,
+            };
+            let options = RenderOptions { width: px, height: px, view: View::Iso, background, cluster_framing: true, facing: glb.facing, lod: glb.lod, ..Default::default() };
             let mut rendered = render_parts(parts, set, &options, &[View::Iso])?;
-            // Pale models on a dark ground, as on the review sheets.
-            if low_contrast(&rendered, options.background) {
+            // On a solid ground, pale models move to a dark one, as on the review sheets.
+            if ground != ThumbBackground::Sky && low_contrast(&rendered, options.background) {
                 let dark = RenderOptions { background: DARK_BG, ..options };
                 rendered = render_parts(parts, set, &dark, &[View::Iso])?;
             }
-            let jpeg = encode_image(&rendered[0].1, ImageFormat::Jpeg, 85)?;
+            let image = match ground {
+                ThumbBackground::Sky => over_sky(&rendered[0].1),
+                ThumbBackground::Solid(_) => rendered.swap_remove(0).1,
+            };
+            let jpeg = encode_image(&image, ImageFormat::Jpeg, 85)?;
             Ok((bytes, report, Some(jpeg)))
         };
         match with_model(cat, &mut loader, &mut txds, &mut shared, &item, &order, probe, finish) {
@@ -669,6 +705,16 @@ mod tests {
         let mut sorted = a.clone();
         sorted.sort();
         assert_eq!(sorted, (0..20).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn sky_shows_through_where_nothing_was_drawn() {
+        let mut image = RgbaImage::from_pixel(1, 3, Rgba([0, 0, 0, 0]));
+        image.put_pixel(0, 1, Rgba([255, 0, 0, 255]));
+        let out = over_sky(&image);
+        assert_eq!(out.get_pixel(0, 0).0, [58, 112, 184, 255], "zenith at the top");
+        assert_eq!(out.get_pixel(0, 1).0, [255, 0, 0, 255], "the model is untouched");
+        assert_eq!(out.get_pixel(0, 2).0, [198, 220, 238, 255], "horizon at the bottom");
     }
 
     #[test]
