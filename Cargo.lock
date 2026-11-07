@@ -1881,8 +1881,8 @@ dependencies = [
 
 [[package]]
 name = "rage-render"
-version = "0.6.0"
-source = "git+https://github.com/VIRUXE/rage-render?tag=v0.6.0#dfdf6244ee4b60e88c7d46d1007602918083c948"
+version = "0.7.0"
+source = "git+https://github.com/VIRUXE/rage-render?tag=v0.7.0#bd7fb240d9ec3fdca75523ddaafd4ee028bcf033"
 dependencies = [
  "anyhow",
  "console_error_panic_hook",
