@@ -1840,7 +1840,7 @@ checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 
 [[package]]
 name = "rage-cli"
-version = "0.28.0"
+version = "0.28.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -1881,8 +1881,8 @@ dependencies = [
 
 [[package]]
 name = "rage-render"
-version = "0.5.1"
-source = "git+https://github.com/VIRUXE/rage-render?tag=v0.5.1#903a133ae2120262635390c23dca2fb5a8a62dca"
+version = "0.5.2"
+source = "git+https://github.com/VIRUXE/rage-render?tag=v0.5.2#032bc7e8024943d4727beef7e4793bfa64770337"
 dependencies = [
  "anyhow",
  "console_error_panic_hook",
