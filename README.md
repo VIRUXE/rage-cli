@@ -266,6 +266,7 @@ index uses.
 | `catalog info [--json]` | database path, size, build, row and winner counts per kind, parse failures, annotation/packet/embedding counts |
 | `catalog sheet ...` | blind numbered contact sheets and a `packet.json` for a reviewer |
 | `catalog annotate ...` | import a reviewer's descriptions, checked against the tile image hashes |
+| `catalog model [WORDS...\|--ids FILE\|--key KEY] -o DIR [--thumb PX] [--max-texture 1024] [--quality 85] [--lod high] [--facing auto] [--skip-existing] [--limit 64] [--json]` | export models as `<id>.glb` with their textures, resolved as `sheet` resolves them, Y-up and facing +Z; `--thumb` adds an iso `<id>.jpg` |
 | `catalog pack export\|import ...` | text-only annotation packs |
 | `catalog embed ...` | local text embeddings (needs a build with `--features semantic`) |
 
@@ -872,6 +873,22 @@ over local embeddings (a 465 MB model downloaded to `~/.rage-cli/models` on
 first use; about 80 items a second on the same i3, so reviewed items are
 embedded by default and every model name only with `--models`).
 [AGENTS.md](AGENTS.md) is the full guide for an agent doing the reviewing.
+
+### Export models for the web
+
+`catalog model` writes each selected model as a binary glTF, its textures
+found the same way the review sheets find them (embedded, the texture
+dictionary chain, resident and DLC-patched dictionaries), so a three.js or
+Blender viewer shows what the sheets showed:
+
+```sh
+rage catalog model --ids reviewed.txt -o site/models --thumb 320 --skip-existing --limit 100000 --json
+```
+
+Models are turned Y-up with their front on +Z; opaque textures are JPEG and
+alpha ones PNG, downscaled to `--max-texture`. `--thumb` also renders an iso
+preview from the same model and textures. A prop takes about a tenth of a
+second; ten thousand reviewed props export to about 2.7 GB with thumbnails.
 
 ### Agents over MCP
 

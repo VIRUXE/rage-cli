@@ -15,7 +15,8 @@ use std::path::{Path, PathBuf};
 use rage_formats::texture_utils::{encode_image, fit_max_size, to_rgba_image, ImageFormat};
 use rage_formats::{parse_drawables, parse_ytd, parse_yft, DrawableKind, YtdTexture};
 use rage_render::image::{Rgba, RgbaImage};
-use rage_render::{compose_sheet, draw_text, render_parts, text_width, RenderOptions, SheetItem, SheetOptions as GridOptions, View, GLYPH_H};
+use rage_render::{compose_sheet, draw_text, export_glb, glb_report, render_parts, text_width, GlbOptions, RenderOptions, RenderPart, RenderReport,
+                  SheetItem, SheetOptions as GridOptions, TextureSet, View, GLYPH_H};
 
 use super::loader::{fallback_for, resident_for, resolution_order, texture_set_for, DecodedChain, EntryLoader, TxdCache};
 use super::scan::hex_digest;
@@ -372,15 +373,22 @@ fn round2(v: f64) -> f64 {
     (v * 100.0).round() / 100.0
 }
 
-fn model_tile(
+/// Loads an item's model and the texture set it draws with. `probe` reports
+/// the textures still missing; while some are, the resident dictionaries
+/// holding those names and then the shadowed base copies of patched
+/// dictionaries are added and `probe` runs again. `finish` then runs once
+/// on the final set, with the last probe's result.
+#[allow(clippy::too_many_arguments)]
+fn with_model<T, U>(
     cat: &Catalog,
     loader: &mut EntryLoader,
     txds: &mut TxdCache,
     shared: &mut Option<DecodedChain>,
     item: &ItemView,
     order: &[u32],
-    opts: &SheetOptions,
-) -> Result<(RgbaImage, Tile)> {
+    mut probe: impl FnMut(&[RenderPart<'_>], &TextureSet) -> Result<(T, Vec<String>)>,
+    finish: impl FnOnce(&[RenderPart<'_>], &TextureSet, T) -> Result<U>,
+) -> Result<(U, Vec<String>)> {
     let bytes = loader.item_bytes(item)?;
     record_source_hash(cat, item.id, &bytes)?;
     let ext = item.entry_name.rsplit_once('.').map(|(_, e)| e).unwrap_or("");
@@ -397,10 +405,8 @@ fn model_tile(
     .with_context(|| format!("nothing drawable for {}", item.label()))?;
 
     let embedded: Vec<YtdTexture> = embedded_textures_of(loaded.drawables()).into_iter().cloned().collect();
-    let options = RenderOptions { width: opts.cell, height: opts.cell, view: opts.views[0], cluster_framing: true, facing: opts.facing, ..Default::default() };
     let mut set = texture_set_for(cat, loader, txds, shared, order, &embedded)?;
-    let mut rendered = render_parts(&chosen.parts, &set, &options, &opts.views)?;
-    let mut missing = rendered.first().map(|r| r.2.missing_textures.clone()).unwrap_or_default();
+    let (mut probed, mut missing) = probe(&chosen.parts, &set)?;
     if !missing.is_empty() {
         let resident = resident_for(cat, &missing)?;
         if !resident.is_empty() {
@@ -409,8 +415,7 @@ fn model_tile(
                     set.to_mut().push_layer(&t);
                 }
             }
-            rendered = render_parts(&chosen.parts, &set, &options, &opts.views)?;
-            missing = rendered.first().map(|r| r.2.missing_textures.clone()).unwrap_or_default();
+            (probed, missing) = probe(&chosen.parts, &set)?;
         }
         // Still missing: shadowed base copies of patched dictionaries, then
         // any dictionary holding a texture of that exact name.
@@ -421,16 +426,37 @@ fn model_tile(
                     set.to_mut().push_layer(&t);
                 }
             }
-            rendered = render_parts(&chosen.parts, &set, &options, &opts.views)?;
-            missing = rendered.first().map(|r| r.2.missing_textures.clone()).unwrap_or_default();
+            (probed, missing) = probe(&chosen.parts, &set)?;
         }
     }
+    Ok((finish(&chosen.parts, &set, probed)?, missing))
+}
+
+fn model_tile(
+    cat: &Catalog,
+    loader: &mut EntryLoader,
+    txds: &mut TxdCache,
+    shared: &mut Option<DecodedChain>,
+    item: &ItemView,
+    order: &[u32],
+    opts: &SheetOptions,
+) -> Result<(RgbaImage, Tile)> {
+    let options = RenderOptions { width: opts.cell, height: opts.cell, view: opts.views[0], cluster_framing: true, facing: opts.facing, ..Default::default() };
+    let probe = |parts: &[RenderPart<'_>], set: &TextureSet| {
+        let rendered = render_parts(parts, set, &options, &opts.views)?;
+        let missing = rendered.first().map(|r| r.2.missing_textures.clone()).unwrap_or_default();
+        Ok((rendered, missing))
+    };
     // Pale props (white-textured markers, plaster, paper) all but vanish on
     // the light default ground; draw those on a dark one instead.
-    if low_contrast(&rendered, options.background) {
+    let finish = |parts: &[RenderPart<'_>], set: &TextureSet, rendered: Vec<(View, RgbaImage, RenderReport)>| {
+        if !low_contrast(&rendered, options.background) {
+            return Ok(rendered);
+        }
         let dark = RenderOptions { background: DARK_BG, ..options };
-        rendered = render_parts(&chosen.parts, &set, &dark, &opts.views)?;
-    }
+        render_parts(parts, set, &dark, &opts.views)
+    };
+    let (rendered, missing) = with_model(cat, loader, txds, shared, item, order, probe, finish)?;
     let lod = rendered.first().map(|r| format!("{:?}", r.2.lod)).unwrap_or_default();
     let items: Vec<SheetItem<'_>> = rendered.iter().map(|(v, img, _)| SheetItem { label: v.label().to_string(), image: img }).collect();
     let image = compose_sheet(
@@ -439,6 +465,79 @@ fn model_tile(
     );
     let views = opts.views.iter().map(|v| v.label().to_string()).collect();
     Ok((image, Tile { item: item.clone(), png: Vec::new(), sha: String::new(), views, missing, lod: lod.to_lowercase() }))
+}
+
+/// What `catalog model` wrote for one item.
+pub struct ModelExport {
+    pub item: ItemView,
+    pub path: PathBuf,
+    pub bytes: usize,
+    pub report: RenderReport,
+    /// The iso preview written next to the model, with `--thumb`.
+    pub thumb: Option<PathBuf>,
+}
+
+/// Writes each model item as `<id>.glb` in `out_dir`, its textures resolved
+/// through the catalogue exactly as `catalog sheet` resolves them, and with
+/// `thumb` an iso preview `<id>.jpg` of that size drawn from the same model
+/// and textures. Items that fail are returned with the reason instead of
+/// stopping the run.
+pub fn export_models(cat: &Catalog, keys: Option<&GtaKeys>, items: Vec<ItemView>, out_dir: &Path, glb: &GlbOptions, thumb: Option<u32>, texture_budget: usize) -> Result<(Vec<ModelExport>, SkipList)> {
+    let (items, mut skipped) = expand(cat, items)?;
+    std::fs::create_dir_all(out_dir).with_context(|| format!("failed to create {}", out_dir.display()))?;
+    let mut orders: Vec<(ItemView, Vec<u32>)> = Vec::with_capacity(items.len());
+    for item in items {
+        if item.kind == Kind::Texture {
+            skipped.push((item.key.clone(), "a texture, not a model".to_string()));
+            continue;
+        }
+        let order = resolution_order(cat, &item)?;
+        orders.push((item, order));
+    }
+    // Texture-chain order, so neighbours share decoded dictionaries.
+    orders.sort_by(|a, b| a.1.cmp(&b.1).then(a.0.id.cmp(&b.0.id)));
+
+    let mut loader = EntryLoader::new(keys);
+    let mut txds = TxdCache::new(texture_budget);
+    let mut shared: Option<DecodedChain> = None;
+    let mut written = Vec::new();
+    let probe = |parts: &[RenderPart<'_>], set: &TextureSet| {
+        let report = glb_report(parts, set, glb);
+        let missing = report.missing_textures.clone();
+        Ok(((), missing))
+    };
+    for (item, order) in orders {
+        let finish = |parts: &[RenderPart<'_>], set: &TextureSet, _: ()| {
+            let (bytes, report) = export_glb(parts, set, glb)?;
+            let Some(px) = thumb else { return Ok((bytes, report, None)) };
+            let options = RenderOptions { width: px, height: px, view: View::Iso, cluster_framing: true, facing: glb.facing, lod: glb.lod, ..Default::default() };
+            let mut rendered = render_parts(parts, set, &options, &[View::Iso])?;
+            // Pale models on a dark ground, as on the review sheets.
+            if low_contrast(&rendered, options.background) {
+                let dark = RenderOptions { background: DARK_BG, ..options };
+                rendered = render_parts(parts, set, &dark, &[View::Iso])?;
+            }
+            let jpeg = encode_image(&rendered[0].1, ImageFormat::Jpeg, 85)?;
+            Ok((bytes, report, Some(jpeg)))
+        };
+        match with_model(cat, &mut loader, &mut txds, &mut shared, &item, &order, probe, finish) {
+            Ok(((bytes, report, jpeg), _)) => {
+                let path = out_dir.join(format!("{}.glb", item.id));
+                std::fs::write(&path, &bytes).with_context(|| format!("failed to write {}", path.display()))?;
+                let thumb = match jpeg {
+                    Some(jpeg) => {
+                        let thumb_path = out_dir.join(format!("{}.jpg", item.id));
+                        std::fs::write(&thumb_path, jpeg).with_context(|| format!("failed to write {}", thumb_path.display()))?;
+                        Some(thumb_path)
+                    }
+                    None => None,
+                };
+                written.push(ModelExport { item, path, bytes: bytes.len(), report, thumb });
+            }
+            Err(e) => skipped.push((item.key.clone(), format!("{e:#}"))),
+        }
+    }
+    Ok((written, skipped))
 }
 
 fn texture_tile(cat: &Catalog, loader: &mut EntryLoader, item: &ItemView, opts: &SheetOptions) -> Result<(RgbaImage, Tile)> {

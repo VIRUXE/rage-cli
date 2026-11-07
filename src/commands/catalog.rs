@@ -47,6 +47,11 @@ pub enum CatalogCommand {
     /// assets stays in the catalogue until `--reveal`
     Sheet(SheetArgs),
 
+    /// Export models as binary glTF (`<id>.glb`) with their textures, resolved
+    /// through the catalogue exactly as `sheet` resolves them, turned Y-up and
+    /// facing +Z for web viewers and DCC tools
+    Model(ModelArgs),
+
     /// Import a reviewer's descriptions of a packet. Each must quote its
     /// tile's image hash from packet.json; descriptions of any other image
     /// are refused. Imported text becomes searchable at once
@@ -181,6 +186,63 @@ pub struct SheetArgs {
     /// Print which asset each tile of this packet shows, for people once reviewing is done
     #[arg(long, value_name = "PACKET_ID")]
     pub reveal: Option<String>,
+
+    /// Print one JSON object instead of text
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(clap::Args)]
+pub struct ModelArgs {
+    /// Words to select items with, as in `catalog search`
+    pub query: Vec<String>,
+
+    #[command(flatten)]
+    pub filters: FilterArgs,
+
+    /// Select from a file instead: ids or keys one per line, or the output of `catalog search --json`
+    #[arg(long, value_name = "FILE", conflicts_with = "query")]
+    pub ids: Option<PathBuf>,
+
+    /// Select these catalogue keys or ids (repeatable)
+    #[arg(long, value_name = "KEY", conflicts_with = "query")]
+    pub key: Vec<String>,
+
+    /// Directory the .glb files are written to
+    #[arg(short, long, value_name = "DIR")]
+    pub output: PathBuf,
+
+    /// LOD to export: high, medium, low, verylow (falls back to the best the model has)
+    #[arg(long, default_value = "high")]
+    pub lod: rage_formats::LodLevel,
+
+    /// Which way models face: vehicle (+Y), prop (-Y), or auto (vehicle shaders mean +Y)
+    #[arg(long, default_value = "auto", value_parser = crate::commands::screenshot::parse_facing, value_name = "FACING")]
+    pub facing: rage_render::Facing,
+
+    /// Longest texture side kept in the file; larger textures are downscaled (0 keeps every size)
+    #[arg(long, default_value = "1024", value_name = "PX")]
+    pub max_texture: u32,
+
+    /// JPEG quality for opaque textures (alpha-tested and blended ones stay PNG)
+    #[arg(long, default_value = "85", value_name = "1-100")]
+    pub quality: u8,
+
+    /// Also write an iso preview <id>.jpg of this many pixels square, drawn from the same model and textures
+    #[arg(long, value_name = "PX", value_parser = clap::value_parser!(u32).range(16..=2048))]
+    pub thumb: Option<u32>,
+
+    /// Skip items whose <id>.glb already exists in the output directory
+    #[arg(long)]
+    pub skip_existing: bool,
+
+    /// Most items to select
+    #[arg(long, default_value = "64", value_name = "N")]
+    pub limit: usize,
+
+    /// Texture cache budget in MiB while exporting
+    #[arg(long, default_value = "512", value_name = "MIB")]
+    pub texture_budget: usize,
 
     /// Print one JSON object instead of text
     #[arg(long)]
@@ -377,6 +439,7 @@ pub fn run(args: &CatalogArgs, keys: Option<&GtaKeys>, exe: Option<&Path>) -> Re
         CatalogCommand::Get(g) => run_get(g, &db, keys),
         CatalogCommand::Info(i) => run_info(i, &db, exe),
         CatalogCommand::Sheet(a) => run_sheet(a, &db, keys),
+        CatalogCommand::Model(m) => run_model(m, &db, keys),
         CatalogCommand::Annotate(a) => run_annotate(a, &db),
         CatalogCommand::Pack(p) => run_pack(p, &db, keys),
         CatalogCommand::Embed(e) => run_embed(e, &db),
@@ -630,6 +693,66 @@ pub fn sheet_json(summary: &crate::catalog::sheet::PacketSummary) -> json::JsonV
         responses_template: summary.template_path.to_string_lossy().to_string(),
         sheets: sheets, tiles: summary.tiles, skipped: skipped, missing_textures: summary.missing_textures,
     }
+}
+
+fn run_model(args: &ModelArgs, db: &Path, keys: Option<&GtaKeys>) -> Result<()> {
+    let cat = Catalog::open_existing(db)?;
+    let selection: Vec<String> = match &args.ids {
+        Some(file) => crate::catalog::sheet::read_selection(file)?,
+        None => args.key.clone(),
+    };
+    let mut items = Vec::new();
+    if !selection.is_empty() {
+        for k in selection.iter().take(args.limit) {
+            items.push(search::find_item(&cat, k)?);
+        }
+    } else {
+        let filters = args.filters.to_filters()?;
+        let text = args.query.join(" ");
+        let q = SearchQuery { text: &text, raw: false, filters: &filters, limit: args.limit, mode: Mode::Lexical };
+        items = search::search(&cat, &q)?.0.into_iter().map(|h| h.item).collect();
+    }
+    let before = items.len();
+    if args.skip_existing {
+        items.retain(|i| !args.output.join(format!("{}.glb", i.id)).exists());
+    }
+    let existing = before - items.len();
+    if items.is_empty() && existing == 0 {
+        bail!("nothing selected");
+    }
+    let glb = rage_render::GlbOptions { lod: args.lod, facing: args.facing, paint: None, max_texture: args.max_texture, jpeg_quality: args.quality };
+    let (written, skipped) = crate::catalog::sheet::export_models(&cat, keys, items, &args.output, &glb, args.thumb, args.texture_budget << 20)?;
+    if args.json {
+        let mut models = json::JsonValue::new_array();
+        for m in &written {
+            let missing: Vec<&str> = m.report.missing_textures.iter().map(String::as_str).collect();
+            let lod = m.report.lod.map(|l| format!("{l:?}").to_lowercase());
+            let _ = models.push(json::object! {
+                "id": m.item.id, "key": m.item.key.as_str(), "path": m.path.to_string_lossy().to_string(), "bytes": m.bytes,
+                "triangles": m.report.triangles, "geometries": m.report.geometries, "lod": lod,
+                "untextured_geometries": m.report.untextured_geometries, "missing_textures": missing, "faces_positive_y": m.report.faces_positive_y,
+                "thumb": m.thumb.as_ref().map(|p| p.to_string_lossy().to_string()),
+            });
+        }
+        let mut skips = json::JsonValue::new_array();
+        for (key, why) in &skipped {
+            let _ = skips.push(json::object! { "key": key.as_str(), "reason": why.as_str() });
+        }
+        let out = json::object! { "schema": "rage-catalog-model/1", "models": models, "skipped": skips, "already_present": existing };
+        println!("{}", out.pretty(2));
+        return Ok(());
+    }
+    for (key, why) in &skipped {
+        eprintln!("skipped {key}: {why}");
+    }
+    for m in &written {
+        let missing = m.report.missing_textures.len();
+        let note = if missing > 0 { format!(", {missing} texture(s) missing") } else { String::new() };
+        println!("{} {} ({} triangles, {} KiB{note})", m.item.id, m.item.label(), m.report.triangles, m.bytes / 1024);
+    }
+    let total: usize = written.iter().map(|m| m.bytes).sum();
+    println!("Wrote {} model(s), {} MiB, to {} ({} skipped, {} already there)", written.len(), total >> 20, args.output.display(), skipped.len(), existing);
+    Ok(())
 }
 
 fn run_sheet(args: &SheetArgs, db: &Path, keys: Option<&GtaKeys>) -> Result<()> {
