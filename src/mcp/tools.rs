@@ -278,7 +278,7 @@ pub const TOOLS: &[Tool] = &[
     },
     Tool {
         name: "screenshot",
-        description: "Render a model to images from one or more views and return the paths (and the images, with inline_images). Pick the model by catalogue key (nested archives are unpacked first), by archive path and file name, by ped name (composed from its variation info, with components), or by vehicle name (with the _hi model, a livery and carcols paint). Returns rage-screenshot/1: per entry the images, triangle and geometry counts, missing textures (surfaces drawn grey that are not grey in the game), the texture dictionaries used, and warnings.",
+        description: "Render a model to images from one or more views and return the paths (and the images, with inline_images). Pick the model by catalogue key (nested archives are unpacked first), by archive path and file name, by ped name (composed from its variation info, with components), or by vehicle name (with the _hi model, a livery and carcols paint). Vehicles with plate materials get RAGECLI plate text by default. Returns rage-screenshot/1: per entry the images, triangle and geometry counts, missing textures (surfaces drawn grey that are not grey in the game), the texture dictionaries used, and warnings.",
         properties: r##"{
   "key": { "type": "string", "description": "A catalogue key from catalog_search (a model: drawable, fragment, dictionary or dd_entry)" },
   "archive": { "type": "string", "description": "Path to an .rpf archive (with file)" },
@@ -499,6 +499,7 @@ fn screenshot_tool(ctx: &Context, args: &Args) -> Result<Result<ToolResult>, Rpc
             }
             None => (archive.map(PathBuf::from), file, entry),
         };
+        let plate_text = vehicle.as_ref().map(|_| "RAGECLI".to_owned());
         let sargs = screenshot::ScreenshotArgs {
             archive,
             file,
@@ -527,6 +528,7 @@ fn screenshot_tool(ctx: &Context, args: &Args) -> Result<Result<ToolResult>, Rpc
                 Some(p) => Some(parsed("paint", screenshot::parse_paint(&p))?),
                 None => None,
             },
+            plate_text,
             no_index: false,
             no_cluster_framing: false,
             json: true,

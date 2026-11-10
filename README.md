@@ -227,7 +227,7 @@ debug logging, `--no-update-check` to skip the daily release check.
 
 | Command | Does |
 |---|---|
-| `screenshot <archive> <file> [--views ...] [--facing auto\|vehicle\|prop] [--grid] [--ytd NAME]... [--paint #rrggbb] [--background ...] [--size WxH] [--lod ...] [--entry ...]` | render a `.ydr`/`.ydd`/`.yft` from the six named views or any `AZIMUTH:ELEVATION` angle, textures resolved from the file, `--ytd` and the index |
+| `screenshot <archive> <file> [--views ...] [--facing auto\|vehicle\|prop] [--grid] [--ytd NAME]... [--paint #rrggbb] [--plate-text TEXT] [--background ...] [--size WxH] [--lod ...] [--entry ...]` | render a `.ydr`/`.ydd`/`.yft` from the six named views or any `AZIMUTH:ELEVATION` angle, textures resolved from the file, `--ytd` and the index |
 | `screenshot --vehicle NAME [--hi] [--livery N] [--colour-from carcols[:C]]` (also with `<archive> <file>`) | a vehicle by name through the index: its high-detail model, one of its liveries, its paint from carcols and carvariations |
 | `screenshot --ped NAME [--component SLOT=D[:T[:A]]]...` | a ped composed from its variation info: the 12 component slots' default drawables and textures, or the ones named |
 | `plot [<input>...] [--game --region x0,y0,x1,y1 [--detail D] [--max-lod LEVEL] [--hour H] [--weather W]] [--ymap|--ytyp|--ybn|--ydr FILE]... [--layers ...] [--floor-z Z|--z-range LO,HI] [--region ...] [--scale PX] [--marker x,y,label]... [--labels] [--props N|--no-props] [--title T] [--quality Q] -o FILE` | a top-down plan of an interior — rooms, portals, props, collision, drawable shell, navmesh and path nodes — of an exterior map, its entities drawn with their models — or, with `--game`, of a box of the vanilla map: every chunk the game streams there, LOD-filtered, with water and height contours — as PNG, JPG, WebP or SVG |
@@ -481,6 +481,10 @@ combination in carvariations, looked up in carcols' colour list
 ```sh
 rage screenshot --vehicle police --hi --livery 2 --colour-from carcols --views front,left,iso --grid
 ```
+
+Vehicle models with a license-plate material render with `RAGECLI` by default.
+Use `--plate-text TEXT` to choose another plate string (1–7 ASCII letters,
+digits or spaces); models without a plate material are left unchanged.
 
 ![Police car high-detail, livery 2, painted from carcols](docs/images/screenshot-police-hi-livery-grid.jpg)
 
