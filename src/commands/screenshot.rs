@@ -112,7 +112,7 @@ pub struct ScreenshotArgs {
     #[arg(long)]
     pub entry: Option<String>,
 
-    /// Body colour (#rrggbb) for vehicle paint shaders, which otherwise render white
+    /// Primary paint colour (#rrggbb); secondary renders black, other layers are unchanged
     #[arg(long, value_name = "#RRGGBB", value_parser = parse_paint)]
     pub paint: Option<[u8; 3]>,
 
