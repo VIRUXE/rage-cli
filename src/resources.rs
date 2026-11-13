@@ -40,7 +40,11 @@ pub fn load_resource_bytes(file: &str, archive: Option<&Path>, keys: Option<&Gta
         Some(archive_path) => {
             let archive = Archive::open(archive_path, keys)?;
             archive.require_keys(keys)?;
-            load_resource(&archive, file, keys)
+            // Metadata can be a binary entry (PSO/RBF/XML), rather than an
+            // RSC resource. The raw-byte loader serves resource dump too.
+            let entry = archive.find_file(file)
+                .with_context(|| format!("'{}' not found in archive", file))?;
+            archive.extract(entry, keys).with_context(|| format!("failed to extract '{}'", file))
         }
     }
 }
