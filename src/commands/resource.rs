@@ -38,8 +38,10 @@ pub enum ResourceCommand {
     Build(BuildArgs),
     /// Fix the flags and extents of .ymap files in place (a file, or every .ymap in a folder)
     Recalc(RecalcArgs),
-    /// Convert GTA V Enhanced (Gen9) .ytd files to the legacy layout FiveM loads (more types to follow)
+    /// Convert Gen9 .ytd to legacy, or export .ymt metadata from an RPF/file as XML
     Convert(super::resource_convert::ConvertArgs),
+    /// Batch-export .ymt metadata from files, folders or RPF archives as XML/JSON
+    Export(super::resource_export::ExportArgs),
 }
 
 #[derive(clap::Args)]
@@ -341,7 +343,8 @@ pub fn run(args: &ResourceArgs, keys: Option<&GtaKeys>, exe: Option<&Path>, verb
         ResourceCommand::Rename(rename) => run_rename(rename),
         ResourceCommand::Build(build) => run_build(build, keys, exe),
         ResourceCommand::Recalc(recalc) => run_recalc(recalc, keys, exe),
-        ResourceCommand::Convert(convert) => super::resource_convert::run(convert),
+        ResourceCommand::Convert(convert) => super::resource_convert::run(convert, keys),
+        ResourceCommand::Export(export) => super::resource_export::run(export, keys),
     }
 }
 
@@ -904,15 +907,19 @@ impl Checks {
 
 fn run_dump(args: &DumpArgs, keys: Option<&GtaKeys>) -> Result<()> {
     let data = load_resource_bytes(&args.file, args.archive.as_deref(), keys)?;
-    let container = detect(&data).with_context(|| format!("'{}'", args.file))?;
-    if let (Container::Rsc7(_), Some(kind)) = (&container, drawable::kind_of_name(&args.file)) {
-        return run_dump_drawable(kind, &data, args);
-    }
-    let dump = match container {
-        Container::Rsc7(_) => dump_meta(&data).with_context(|| {
-            format!("'{}' is an RSC7 resource but not a Meta file (only .ymap/.ytyp/.ymt carry a schema to dump)", args.file)
-        })?,
-        Container::Meta(_) => dump_metadata(&data)?.1,
+    let dump = if crate::rdr2::metadata::is_rsc8(&data) {
+        crate::rdr2::metadata::dump(&data)?
+    } else {
+        let container = detect(&data).with_context(|| format!("'{}'", args.file))?;
+        if let (Container::Rsc7(_), Some(kind)) = (&container, drawable::kind_of_name(&args.file)) {
+            return run_dump_drawable(kind, &data, args);
+        }
+        match container {
+            Container::Rsc7(_) => dump_meta(&data).with_context(|| {
+                format!("'{}' is an RSC7 resource but not a Meta file (only .ymap/.ytyp/.ymt carry a schema to dump)", args.file)
+            })?,
+            Container::Meta(_) => dump_metadata(&data)?.1,
+        }
     };
     for warning in &dump.warnings {
         eprintln!("warning: {warning}");
