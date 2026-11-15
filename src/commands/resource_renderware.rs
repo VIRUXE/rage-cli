@@ -13,15 +13,26 @@ pub fn info(name: &str, data: &[u8], json: bool) -> Result<String> {
     let chunks: Vec<_> = doc.chunks.iter().map(|c| json::object! {
         kind: c.kind, version: c.version, payload_bytes: c.payload.len()
     }).collect();
-    let value = json::object! {
+    let mut value = json::object! {
         schema: "rage-renderware-info/1", file: name, format: format.name(),
         container: "RenderWare", chunks: json::JsonValue::Array(chunks),
         padding_bytes: doc.padding.len()
     };
+    if format==Format::Txd {
+        let txd=rage_formats::renderware::txd::Txd::parse(data)?;
+        value["textures"]=json::JsonValue::Array(txd.native_textures.iter().map(|t|json::object!{
+            name:t.name.clone(),mask:t.mask.clone(),platform:t.platform,width:t.width,height:t.height,
+            depth:t.depth,mip_levels:t.mips.len(),available_mips:t.available_mips(),
+            empty_mip_records:t.mips.len()-t.available_mips(),raster_format:t.raster_format,d3d_format:t.d3d_format
+        }).collect());
+    }
     if json { return Ok(value.pretty(2) + "\n"); }
     let mut out = format!("{} — {} (RenderWare)\n", name, format.name().to_uppercase());
     for c in &doc.chunks {
         out.push_str(&format!("  chunk 0x{:08X}, version 0x{:08X}: {} payload bytes\n", c.kind, c.version, c.payload.len()));
+    }
+    for texture in value["textures"].members() {
+        out.push_str(&format!("  {} — {}x{}, {} mip(s), platform {}\n",texture["name"],texture["width"],texture["height"],texture["mip_levels"],texture["platform"]));
     }
     if !doc.padding.is_empty() { out.push_str(&format!("  {} bytes of archive padding\n", doc.padding.len())); }
     Ok(out)

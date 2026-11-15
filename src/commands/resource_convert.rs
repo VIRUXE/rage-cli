@@ -89,6 +89,7 @@ fn gather(paths: &[PathBuf]) -> Result<Vec<(PathBuf, PathBuf)>> {
 }
 
 pub fn run(args: &ConvertArgs) -> Result<()> {
+    if args.to.eq_ignore_ascii_case("gta5") {return run_classic(args);}
     if !args.to.eq_ignore_ascii_case("legacy") {
         bail!("--to {}: only `legacy` is supported (Enhanced -> the PC game FiveM runs)", args.to);
     }
@@ -121,6 +122,65 @@ pub fn run(args: &ConvertArgs) -> Result<()> {
     }
     eprintln!("{} {converted}, skipped {skipped}, failed {failed}", if args.dry_run { "Would convert" } else { "Converted" });
     if failed > 0 { bail!("{failed} of {} file(s) could not be converted", files.len()); }
+    Ok(())
+}
+
+fn run_classic(args:&ConvertArgs)->Result<()> {
+    let extensions=["txd","dff","ipl","col"];
+    let mut files=Vec::new();
+    for input in &args.paths {
+        if input.is_dir() {
+            let mut children=crate::utils::walkdir(input)?;
+            children.sort();
+            for path in children {
+                if path.extension().and_then(|e|e.to_str()).is_some_and(|e|extensions.iter().any(|x|e.eq_ignore_ascii_case(x))) {
+                    let relative=path.strip_prefix(input)?.to_path_buf();files.push((path,relative));
+                }
+            }
+        }else{
+            anyhow::ensure!(input.is_file(),"{} is not a file or directory",input.display());
+            files.push((input.clone(),PathBuf::from(input.file_name().context("input has no filename")?)));
+        }
+    }
+    anyhow::ensure!(!files.is_empty(),"no classic GTA source files found");
+    let mut outputs=std::collections::HashSet::new();
+    for (_,relative) in &files {
+        let extension=relative.extension().and_then(|e|e.to_str()).unwrap_or("").to_ascii_lowercase();
+        let target=match extension.as_str(){"txd"=>"ytd","dff"=>"ydr","ipl"=>"ymap","col"=>"ybn",_=>bail!("unsupported source extension: {extension}")};
+        let output=args.output.join(relative.with_extension(target));
+        anyhow::ensure!(outputs.insert(output.to_string_lossy().to_lowercase()),"conversion outputs collide: {}",output.display());
+        anyhow::ensure!(!output.exists(),"conversion output already exists: {}",output.display());
+    }
+    let mut failed=0;
+    for (path,relative) in files {
+        let result=(||->Result<_>{
+            let data=std::fs::read(&path)?;
+            let extension=path.extension().and_then(|e|e.to_str()).unwrap_or("").to_ascii_lowercase();
+            match extension.as_str(){
+                "txd"=>{
+                    let bytes=rage_formats::renderware::txd::Txd::parse(&data)?.to_ytd()?;
+                    let check=rage_formats::parse_ytd(&bytes)?;
+                    let source=rage_formats::renderware::txd::Txd::parse(&data)?;
+                    anyhow::ensure!(check.len()==source.native_textures.len(),"converted texture count differs");
+                    Ok((relative.with_extension("ytd"),bytes))
+                }
+                _=>bail!("{extension} conversion requires its codec integration"),
+            }
+        })();
+        match result {
+            Ok((relative,bytes))=>{
+                let output=args.output.join(relative);
+                if args.dry_run{eprintln!("would convert {} -> {}",path.display(),output.display());}
+                else{
+                    if let Some(parent)=output.parent(){std::fs::create_dir_all(parent)?;}
+                    std::fs::write(&output,bytes)?;
+                    eprintln!("converted {} -> {}",path.display(),output.display());
+                }
+            }
+            Err(error)=>{failed+=1;eprintln!("FAILED {}: {error:#}",path.display());}
+        }
+    }
+    anyhow::ensure!(failed==0,"{failed} source files could not be converted");
     Ok(())
 }
 

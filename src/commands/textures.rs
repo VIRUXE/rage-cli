@@ -9,6 +9,7 @@ use rage_render::{compose_sheet, SheetItem, SheetOptions};
 use crate::resources::{embedded_textures, extension_of, file_stem, load_drawables, load_texture_dictionary,
                        sanitize};
 use crate::rpf::{Archive, GtaKeys};
+use rage_formats::renderware::{Game,txd::Txd};
 
 #[derive(clap::Args)]
 #[command(subcommand_negates_reqs = true, args_conflicts_with_subcommands = true)]
@@ -106,7 +107,7 @@ pub struct EncodeArgs {
 #[derive(clap::Args)]
 pub struct BuildArgs {
     /// DDS or image files, directories or globs; each texture is named after its file stem
-    #[arg(required = true, value_name = "INPUT")]
+    #[arg(required_unless_present = "remove", value_name = "INPUT")]
     pub inputs: Vec<String>,
 
     /// The .ytd to write
@@ -116,6 +117,14 @@ pub struct BuildArgs {
     /// Start from an existing dictionary: inputs add to it, or replace entries of the same name
     #[arg(long, value_name = "YTD")]
     pub from: Option<PathBuf>,
+
+    /// Source-game layout for a new TXD dictionary (required without --from)
+    #[arg(long, value_parser = ["iii", "vc", "sa"])]
+    pub game: Option<String>,
+
+    /// Remove a texture by name from --from; repeatable
+    #[arg(long, requires = "from")]
+    pub remove: Vec<String>,
 
     /// Format for images that need encoding (DDS inputs are stored as they are)
     #[arg(short, long, value_name = "FORMAT", value_parser = parse_format)]
@@ -210,7 +219,16 @@ pub fn run(args: &TexturesArgs, keys: Option<&GtaKeys>) -> Result<()> {
     }
     let archive_path = args.archive.as_deref().expect("required by clap");
 
-    let (textures, stem) = match &args.file {
+    let txd_source = match args.file.as_deref() {
+        Some(file) if extension_of(file).eq_ignore_ascii_case("txd") => Some((file.to_string(),crate::resources::load_entry_bytes(file,Some(archive_path),keys)?)),
+        None if extension_of(&archive_path.to_string_lossy()).eq_ignore_ascii_case("txd") => Some((archive_path.to_string_lossy().into_owned(),std::fs::read(archive_path)?)),
+        _ => None,
+    };
+    let txd_source=txd_source.map(|(name,data)|Txd::parse(&data).map(|txd|(name,txd))).transpose()?;
+
+    let (textures, stem) = if let Some((name,txd))=&txd_source {
+        (txd.top_textures()?,file_stem(name))
+    } else {match &args.file {
         None if is_loose_resource(archive_path) => {
             let stem = archive_path.file_stem().and_then(|s| s.to_str()).unwrap_or("textures").to_string();
             (textures_from_loose(archive_path)?, stem)
@@ -224,7 +242,7 @@ pub fn run(args: &TexturesArgs, keys: Option<&GtaKeys>) -> Result<()> {
             archive.require_keys(keys)?;
             (textures_from_archive(&archive, file, keys)?, file_stem(file))
         }
-    };
+    }};
 
     if textures.is_empty() {
         println!("No textures found");
@@ -241,11 +259,15 @@ pub fn run(args: &TexturesArgs, keys: Option<&GtaKeys>) -> Result<()> {
     let mut sheet_items: Vec<(String, image::RgbaImage, &YtdTexture)> = Vec::new();
 
     for Named { name, file, tex } in &named {
-        println!("{}", describe(name, tex));
-
         if args.dds {
             let dds_path = out_dir.join(format!("{file}.dds"));
-            match std::fs::write(&dds_path, tex.to_dds()) {
+            let bytes=if let Some((_,txd))=&txd_source {
+                let source=txd.native_textures.iter().find(|t|t.name==*name).context("source TXD texture not found")?;
+                let bytes=source.to_dds()?;
+                println!("  {} — {}x{}x1 {} {} mip(s) ({} bytes)",name,source.width,source.height,tex.format,source.available_mips(),bytes.len().saturating_sub(128));
+                bytes
+            }else{println!("{}",describe(name,tex));tex.to_dds()};
+            match std::fs::write(&dds_path, bytes) {
                 Ok(()) => exported += 1,
                 Err(err) => {
                     eprintln!("warning: failed to write {}: {}", dds_path.display(), err);
@@ -254,6 +276,8 @@ pub fn run(args: &TexturesArgs, keys: Option<&GtaKeys>) -> Result<()> {
             }
             continue;
         }
+
+        println!("{}", describe(name, tex));
 
         let result: Result<()> = (|| {
             let mut img = to_rgba_image(tex)?;
@@ -432,7 +456,10 @@ fn run_encode(args: &EncodeArgs) -> Result<()> {
 fn run_build(args: &BuildArgs) -> Result<()> {
     let mut exts: Vec<&str> = vec!["dds"];
     exts.extend(IMAGE_EXTENSIONS);
-    let inputs = collect_inputs(&args.inputs, &exts)?;
+    let inputs = if args.inputs.is_empty(){Vec::new()}else{collect_inputs(&args.inputs, &exts)?};
+    let target_txd=has_extension(&args.output,&["txd"]);
+    let game=match args.game.as_deref(){Some("iii")=>Some(Game::Iii),Some("vc")=>Some(Game::ViceCity),Some("sa")=>Some(Game::SanAndreas),_=>None};
+    let mut source_txd=None;
 
     // Lowercase name -> texture; the dictionary looks entries up by the
     // hash of the lowercased name, so that is the identity here.
@@ -440,12 +467,26 @@ fn run_build(args: &BuildArgs) -> Result<()> {
     let mut kept: std::collections::HashSet<String> = std::collections::HashSet::new();
     if let Some(from) = &args.from {
         let data = std::fs::read(from).with_context(|| format!("failed to read {}", from.display()))?;
-        let existing = parse_ytd(&data).with_context(|| format!("failed to parse YTD {}", from.display()))?;
+        let existing = if has_extension(from,&["txd"]) {
+            let txd=Txd::parse(&data)?;
+            let existing=if target_txd {txd.top_textures()?}else{txd.textures()?};
+            if target_txd {source_txd=Some(txd);}
+            existing
+        }else{parse_ytd(&data).with_context(|| format!("failed to parse YTD {}", from.display()))?};
         println!("Starting from {} ({} texture(s))", from.display(), existing.len());
         for tex in existing {
             kept.insert(tex.name.to_lowercase());
             entries.insert(tex.name.to_lowercase(), tex);
         }
+    }
+
+    anyhow::ensure!(!target_txd || source_txd.is_some() || game.is_some(),"a new TXD needs --game iii|vc|sa (or --from an existing TXD)");
+    anyhow::ensure!(source_txd.is_none() || game.is_none(),"--game applies to new dictionaries; --from retains the source TXD layout");
+    for name in &args.remove {
+        let key=name.to_lowercase();
+        anyhow::ensure!(entries.remove(&key).is_some(),"texture '{name}' does not exist");
+        kept.remove(&key);
+        if let Some(txd)=&mut source_txd {txd.remove(name)?;}
     }
 
     let mut added = 0usize;
@@ -463,6 +504,9 @@ fn run_build(args: &BuildArgs) -> Result<()> {
             bail!("{}: not a DDS or image file", path.display());
         };
         let key = tex.name.to_lowercase();
+        if let Some(txd)=&mut source_txd {
+            if txd.native_textures.iter().any(|t|t.name.eq_ignore_ascii_case(&tex.name)){txd.replace(tex.clone())?;}else{txd.add(tex.clone())?;}
+        }
         kept.remove(&key);
         let verb = if entries.insert(key, tex.clone()).is_some() {
             replaced += 1;
@@ -475,7 +519,9 @@ fn run_build(args: &BuildArgs) -> Result<()> {
     }
 
     let textures: Vec<YtdTexture> = entries.into_values().collect();
-    let bytes = serialize_ytd(&textures)?;
+    let bytes = if target_txd {
+        if let Some(txd)=source_txd {txd.build()?}else{Txd::from_textures(textures.clone(),game.unwrap())?.build()?}
+    }else{serialize_ytd(&textures)?};
     if let Some(parent) = args.output.parent().filter(|p| !p.as_os_str().is_empty()) {
         std::fs::create_dir_all(parent).with_context(|| format!("failed to create {}", parent.display()))?;
     }

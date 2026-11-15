@@ -192,10 +192,16 @@ pub fn ytd_lookup_name(spec: &str) -> String {
 pub fn load_texture_dictionary(archive: &Archive, spec: &str, keys: Option<&GtaKeys>) -> Result<Vec<YtdTexture>> {
     if Path::new(spec).is_file() {
         let data = fs::read(spec).with_context(|| format!("failed to read '{}'", spec))?;
+        if extension_of(spec).eq_ignore_ascii_case("txd") {return rage_formats::renderware::txd::Txd::parse(&data)?.top_textures();}
         return parse_ytd(&data).with_context(|| format!("failed to parse YTD '{}'", spec));
     }
 
     let lookup_name = ytd_lookup_name(spec);
+    if extension_of(&lookup_name).eq_ignore_ascii_case("txd") {
+        let entry=archive.find_file(&lookup_name).with_context(||format!("'{lookup_name}' not found"))?;
+        let data=archive.extract(entry,keys)?;
+        return rage_formats::renderware::txd::Txd::parse(&data)?.top_textures();
+    }
     let data = load_resource(archive, &lookup_name, keys)?;
     parse_ytd(&data).with_context(|| format!("failed to parse YTD '{}'", lookup_name))
 }

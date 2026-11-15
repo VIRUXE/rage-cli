@@ -10,7 +10,7 @@ fn renderware_info_dump_build_preserves_unknown_chunks_and_padding() {
     let dump = t.path().join("test.json");
     let output = t.path().join("out.txd");
     let mut bytes = Vec::new();
-    for n in [0x16u32, 15, 0x1803ffff, 0x12345678, 3, 0x1803ffff] {
+    for n in [0x16u32, 31, 0x1803ffff, 1, 4, 0x1803ffff, 0, 0x12345678, 3, 0x1803ffff] {
         bytes.extend_from_slice(&n.to_le_bytes());
     }
     bytes.extend_from_slice(&[1,2,3]); bytes.resize(2048,0);

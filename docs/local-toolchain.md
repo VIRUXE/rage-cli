@@ -16,6 +16,7 @@ From PowerShell in rage-cli:
 ./scripts/with-local-toolchain.ps1 test --quiet
 ./scripts/with-local-toolchain.ps1 tree -i rage-formats
 ./scripts/with-local-toolchain.ps1 -ToolchainRoot C:/dev/gta/v/tools -- test --test img
+./scripts/with-local-toolchain.ps1 test --test gtasa '--' --nocapture
 ```
 
 The wrapper passes Cargo arguments directly, patches both registry and renderer
