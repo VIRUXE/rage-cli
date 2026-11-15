@@ -60,6 +60,29 @@ Console/mobile-native and cubemap raster layouts are identified as unsupported.
 
 ## Editable documents
 
+DFF inspection and editing uses the same commands:
+
+```powershell
+rage resource info model.dff --archive ./gta3.img --json
+rage resource dump ./model.dff -o ./model.json
+rage resource build ./model.json -o ./edited.dff
+```
+
+DFF documents expose `scene.frames`, `scene.geometries` and `scene.atomics`.
+Frames retain names, parent indices, affine local matrices and HAnim data.
+Geometry fields include morph positions/normals, UV sets, vertex colors,
+triangles with material indices, material colors and texture references, skin
+indices/weights/inverse bind matrices and night colors. Slot indices retain
+their meaning across edits. Changing clump membership requires changing the
+explicit raw clump structure as well; it is not inferred from reordered arrays.
+
+Known bin meshes are regenerated after topology edits. Unknown geometry plugins
+that may refer to the old topology make the edit fail unless explicitly removed.
+Keep meaningful unknown data when possible. Source UV sentinel bit patterns and
+unused skin-matrix words survive unchanged rebuilding; referenced non-finite
+UVs are reported as unusable for rendering, rather than replaced with guessed
+coordinates. Non-finite UVs in editable JSON use an explicit `bits` object.
+
 ```powershell
 rage resource dump ./original.txd -o ./texture.json
 rage resource build ./texture.json -o ./rebuilt.txd
