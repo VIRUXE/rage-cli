@@ -38,6 +38,24 @@ fn sample(name: &str) -> YtdTexture {
         pixel_data: [255, 0, 0, 128].repeat(4),
     }
 }
+
+#[test]
+fn duplicate_input_texture_names_fail_before_output() {
+    let t = tempfile::tempdir().unwrap();
+    let a = t.path().join("a");
+    let b = t.path().join("b");
+    fs::create_dir(&a).unwrap();
+    fs::create_dir(&b).unwrap();
+    let first = a.join("same.png");
+    let second = b.join("SAME.png");
+    RgbaImage::from_pixel(1, 1, Rgba([255, 0, 0, 255])).save(&first).unwrap();
+    RgbaImage::from_pixel(1, 1, Rgba([0, 255, 0, 255])).save(&second).unwrap();
+    let output = t.path().join("out.txd");
+    let result = run(&["textures", "build", s(&first), s(&second), "--game", "sa", "--format", "rgba8", "-o", s(&output)]);
+    assert!(!result.status.success(), "duplicate texture names silently overwrote input");
+    assert!(String::from_utf8_lossy(&result.stderr).contains("duplicate"), "{}", String::from_utf8_lossy(&result.stderr));
+    assert!(!output.exists());
+}
 #[test]
 fn export_txd_and_rebuild_from_images() {
     let t = tempfile::tempdir().unwrap();

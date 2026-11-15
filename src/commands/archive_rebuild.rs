@@ -9,7 +9,7 @@ pub struct ArchiveArgs {
 }
 #[derive(clap::Subcommand)]
 enum ArchiveCommand {
-    /// Write a new archive, preserving entries except explicitly requested changes
+    /// Write a new IMG archive, preserving entries except explicitly requested changes
     Rebuild {
         input: PathBuf,
         #[arg(short, long)] output: PathBuf,
@@ -26,6 +26,8 @@ pub fn run(args: &ArchiveArgs, keys: Option<&GtaKeys>) -> Result<()> {
     let ArchiveCommand::Rebuild { input, output, add, replace, remove } = &args.command;
     anyhow::ensure!(!output.exists(), "output must be a new archive: {}", output.display());
     let archive = Archive::open(input, keys)?;
+    anyhow::ensure!(matches!(archive.version(), crate::rpf::RpfVersion::Img1 | crate::rpf::RpfVersion::Img2 | crate::rpf::RpfVersion::Img3),
+        "archive rebuild currently supports IMG1/2/3 only; preserving RPF resource metadata is not implemented");
     archive.require_keys(keys)?;
     archive.verify_ranges()?;
     let mut files = archive.list_files().into_iter()

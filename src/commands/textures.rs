@@ -491,7 +491,10 @@ fn run_build(args: &BuildArgs) -> Result<()> {
 
     let mut added = 0usize;
     let mut replaced = 0usize;
+    let mut input_names = std::collections::HashSet::new();
     for path in &inputs {
+        anyhow::ensure!(!target_txd || input_names.insert(stem_of(path).to_lowercase()),
+            "duplicate input texture name: {}", stem_of(path));
         let tex = if has_extension(path, &["dds"]) {
             let data = std::fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
             let mut tex = parse_dds(&data).with_context(|| format!("{}", path.display()))?;

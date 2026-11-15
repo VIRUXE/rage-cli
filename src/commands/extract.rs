@@ -44,11 +44,12 @@ pub fn run(archive_path: &Path, output_dir: Option<&Path>, patterns: &[String], 
     println!("Extracting {} files...", to_extract.len());
 
     let total = to_extract.len();
+    for file in &to_extract { checked_destination(&output_path, &file.path)?; }
     let mut ok = 0usize;
     let mut fail = 0usize;
 
     for (i, file) in to_extract.iter().enumerate() {
-        let dest = output_path.join(&file.path);
+        let dest = checked_destination(&output_path, &file.path)?;
         if let Some(parent) = dest.parent() { fs::create_dir_all(parent)?; }
 
         match archive.extract(file, keys) {
@@ -78,6 +79,31 @@ fn validate_paths(archive: &Archive) -> Result<()> {
             "unsafe archive entry path: '{}'", file.path);
     }
     Ok(())
+}
+
+/// Existing children must be ordinary files/directories. In particular, a
+/// junction below the output root must never redirect a write outside it.
+fn checked_destination(root: &Path, relative: &str) -> Result<PathBuf> {
+    let mut destination = root.to_path_buf();
+    for component in relative.replace('\\', "/").split('/') {
+        anyhow::ensure!(!component.is_empty() && component != "." && component != ".."
+            && !component.contains(':') && !component.ends_with(['.', ' ']),
+            "unsafe archive entry path: {relative}");
+        destination.push(component);
+        match fs::symlink_metadata(&destination) {
+            Ok(metadata) => {
+                let mut linked = metadata.file_type().is_symlink();
+                #[cfg(windows)] {
+                    use std::os::windows::fs::MetadataExt;
+                    linked |= metadata.file_attributes() & 0x400 != 0;
+                }
+                anyhow::ensure!(!linked, "extraction destination contains a symlink or reparse point: {}", destination.display());
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(destination)
 }
 
 /// The entries the patterns name, in archive order and each once: every
@@ -199,7 +225,10 @@ fn extract_recursive(
 
         if !wanted(&full, patterns) { continue; }
 
-        let dest = output_path.join(&full);
+        let dest = match checked_destination(output_path, &full) {
+            Ok(dest) => dest,
+            Err(error) => { eprintln!("\nUnsafe extraction destination: {error:#}"); fail.set(fail.get() + 1); continue; }
+        };
         if let Some(parent) = dest.parent() {
             if let Err(e) = fs::create_dir_all(parent) {
                 eprintln!("\nmkdir failed {}: {}", parent.display(), e);

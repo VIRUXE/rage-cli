@@ -1,5 +1,11 @@
 # Classic GTA assets
 
+Checkpoint scope: IMG handling, TXD inspection/editing/rebuilding/export and
+strict TXD-to-YTD conversion, plus DFF inspection/editing/rebuilding.
+DFF rendering/GLB/YDR, IPL/IDE, COL/YBN and scene conversion are follow-up work.
+See the [remaining-work tracker](https://github.com/VIRUXE/rage-cli/issues/45)
+for release prerequisites and linked implementation issues.
+
 Development builds use the adjacent crates through the
 [local-toolchain wrapper](local-toolchain.md). Parsing and writing are our own
 implementations; no external RenderWare parser is vendored.
@@ -18,6 +24,9 @@ rage archive rebuild ./edited.img -o ./smaller.img --remove bistro.txd
 
 IMG1 needs its paired same-stem `.dir`; `--img-dir FILE` overrides its location.
 Creation accepts `--format img1`, `img2` and `img3`. IMG1 produces two files.
+`archive rebuild` currently accepts IMG1/2/3 only; RPF resource-preserving
+rebuilding is tracked separately. Extraction refuses symlinks and Windows
+reparse points beneath the chosen output root.
 New IMG outputs must not already exist. Names that collide ignoring case,
 non-ASCII names, and names exceeding IMG1/2's 24-byte field are rejected.
 IMG containers are flat; creating one from a directory uses each file's basename

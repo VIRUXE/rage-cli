@@ -104,6 +104,26 @@ fn extract_cannot_escape_output() {
     assert!(!t.path().join("escape.dff").exists());
 }
 
+#[cfg(windows)]
+#[test]
+fn extract_cannot_follow_existing_junction() {
+    let t = tempfile::tempdir().unwrap();
+    let img = t.path().join("bad.img");
+    img2(&img, b"link/file.dff", b"overwrite");
+    let output = t.path().join("extract");
+    let outside = t.path().join("outside");
+    fs::create_dir_all(&output).unwrap();
+    fs::create_dir_all(&outside).unwrap();
+    fs::write(outside.join("file.dff"), b"keep").unwrap();
+    let status = std::process::Command::new("cmd").args(["/C", "mklink", "/J"])
+        .arg(output.join("link")).arg(&outside).output().unwrap();
+    assert!(status.status.success(), "{}", String::from_utf8_lossy(&status.stderr));
+    let result = rage(&["extract", s(&img), "-o", s(&output)]);
+    assert!(!result.status.success(), "extraction followed a junction");
+    assert_eq!(fs::read(outside.join("file.dff")).unwrap(), b"keep");
+    fs::remove_dir(output.join("link")).unwrap();
+}
+
 #[test]
 fn rebuild_preserves_unmodified() {
     let t = tempfile::tempdir().unwrap(); let img = t.path().join("in.img");
@@ -120,6 +140,20 @@ fn rebuild_preserves_unmodified() {
     let out = t.path().join("edited"); ok(&["extract", s(&edited), "-o", s(&out)]);
     assert_eq!(&fs::read(out.join("test.dff")).unwrap()[..6], b"edited");
     assert!(!out.join("extra.txd").exists());
+}
+
+#[test]
+fn rebuild_refuses_rpf_until_resource_metadata_can_be_preserved() {
+    let t = tempfile::tempdir().unwrap();
+    let input = t.path().join("input");
+    fs::create_dir(&input).unwrap();
+    fs::write(input.join("test.bin"), b"data").unwrap();
+    let archive = t.path().join("in.rpf");
+    ok(&["create", s(&input), "-o", s(&archive), "--format", "rpf"]);
+    let output = t.path().join("out.rpf");
+    let result = rage(&["archive", "rebuild", s(&archive), "-o", s(&output)]);
+    assert!(!result.status.success(), "unimplemented RPF resource-preserving rebuild accepted");
+    assert!(!output.exists());
 }
 
 #[test]
