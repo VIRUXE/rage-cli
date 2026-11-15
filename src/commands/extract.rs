@@ -6,6 +6,7 @@ use crate::utils::matches_pattern;
 pub fn run(archive_path: &Path, output_dir: Option<&Path>, patterns: &[String], recursive: bool, keys: Option<&GtaKeys>) -> Result<()> {
     let archive = Archive::open(archive_path, keys)?;
     archive.require_keys(keys)?;
+    validate_paths(&archive)?;
 
     let output_path = output_dir.map(Path::to_path_buf).unwrap_or_else(|| {
         PathBuf::from(archive_path.file_stem().and_then(|s| s.to_str()).unwrap_or("extracted"))
@@ -29,6 +30,7 @@ pub fn run(archive_path: &Path, output_dir: Option<&Path>, patterns: &[String], 
         let fail = Cell::new(0usize);
         extract_recursive(&archive, "", &output_path, patterns, keys, &ok, &fail, 0);
         println!("\n\nExtracted: {} / {}  Failed: {}", ok.get(), total_files, fail.get());
+        anyhow::ensure!(fail.get() == 0, "{} files could not be extracted", fail.get());
         return Ok(());
     }
 
@@ -64,6 +66,17 @@ pub fn run(archive_path: &Path, output_dir: Option<&Path>, patterns: &[String], 
     }
 
     println!("\n\nExtracted: {}  Failed: {}", ok, fail);
+    anyhow::ensure!(fail == 0, "{fail} files could not be extracted");
+    Ok(())
+}
+
+fn validate_paths(archive: &Archive) -> Result<()> {
+    for file in archive.list_files() {
+        let path = file.path.replace('\\', "/");
+        anyhow::ensure!(!path.starts_with('/') && !path.contains(':')
+            && path.split('/').all(|p| !p.is_empty() && p != "." && p != ".."),
+            "unsafe archive entry path: '{}'", file.path);
+    }
     Ok(())
 }
 
@@ -143,6 +156,9 @@ fn extract_recursive(
     depth: usize,
 ) {
     const MAX_DEPTH: usize = 16;
+    if let Err(error) = validate_paths(archive) {
+        eprintln!("{error}"); fail.set(fail.get() + 1); return;
+    }
     if depth > MAX_DEPTH {
         eprintln!("\n[RPF] max nesting depth reached at {}", prefix);
         return;

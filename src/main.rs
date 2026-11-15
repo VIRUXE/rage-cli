@@ -51,12 +51,18 @@ struct Cli {
     #[arg(long, global = true)]
     no_update_check: bool,
 
+    /// DIR file paired with an IMG1 archive (default: same stem as the IMG)
+    #[arg(long, global = true, value_name = "DIR_FILE")]
+    img_dir: Option<PathBuf>,
+
     #[command(subcommand)]
     command: Commands,
 }
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Rebuild archives with added, replaced or removed entries
+    Archive(commands::archive_rebuild::ArchiveArgs),
     /// Display information about an RPF archive
     Info {
         /// Path to the RPF archive
@@ -163,6 +169,10 @@ enum Commands {
         #[arg(long, default_value = "7")]
         version: u8,
 
+        /// Container to create: rpf, img1 (paired DIR/IMG), img2 or img3
+        #[arg(long, default_value = "rpf", value_parser = ["rpf", "img1", "img2", "img3"])]
+        format: String,
+
         /// Encryption mode (none, open, ng)
         #[arg(short, long, default_value = "none")]
         encryption: String,
@@ -201,6 +211,7 @@ fn load_keys(exe: Option<&Path>, keys_dir: Option<&Path>) -> Result<Option<GtaKe
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    if let Some(dir) = cli.img_dir.as_ref() { rpf::set_img_dir(dir.clone()); }
 
     env_logger::Builder::from_env(
         env_logger::Env::default().default_filter_or(if cli.verbose { "debug" } else { "info" })
@@ -247,8 +258,9 @@ fn dispatch(command: Commands, keys: Option<&GtaKeys>, exe: Option<&Path>, verbo
         Commands::Manifest(args)                             => manifest::run(&args, keys, exe),
         Commands::Catalog(args)                              => catalog_cmd::run(&args, keys, exe),
         Commands::Mcp(args)                                  => mcp_cmd::run(&args, keys, exe),
-        Commands::Create { input, output, version, encryption } => {
-            create::run(&input, &output, version, &encryption, keys)
+        Commands::Archive(args) => commands::archive_rebuild::run(&args, keys),
+        Commands::Create { input, output, version, encryption, format } => {
+            create::run(&input, &output, version, &encryption, &format, keys)
         }
         Commands::ExtractKeys { output }                     => {
             let exe = exe.context("--exe is required to extract keys")?;

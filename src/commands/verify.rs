@@ -7,8 +7,10 @@ pub fn run(archive_path: &Path, keys: Option<&GtaKeys>) -> Result<()> {
 
     let archive = match Archive::open(archive_path, keys) {
         Ok(a)  => { println!("✓ Archive opened and header parsed"); a }
-        Err(e) => { println!("✗ Failed to open archive: {}", e); return Ok(()); }
+        Err(e) => { return Err(e.context("failed to open archive")); }
     };
+    archive.require_keys(keys)?;
+    archive.verify_ranges()?;
 
     let files = archive.list_files();
     println!("  {} entries ({} files, {} dirs)", archive.entry_count, files.len(), archive.dir_count);
@@ -26,6 +28,7 @@ pub fn run(archive_path: &Path, keys: Option<&GtaKeys>) -> Result<()> {
         println!("✓ All {} file entries valid", files.len());
     } else {
         println!("✗ {} error(s) found", errors);
+        anyhow::bail!("{errors} archive error(s)");
     }
 
     Ok(())

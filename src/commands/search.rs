@@ -197,7 +197,7 @@ fn walk_dir(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
         let path = entry?.path();
         if path.is_dir() {
             walk_dir(&path, out)?;
-        } else if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("rpf")) {
+        } else if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("rpf") || e.eq_ignore_ascii_case("img")) {
             out.push(path);
         }
     }

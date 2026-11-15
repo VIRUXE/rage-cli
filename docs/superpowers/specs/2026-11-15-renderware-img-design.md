@@ -191,6 +191,8 @@ associations from IDE/archive data and generate YBN bounds. Retain material and
 collision flags with an explicit mapping report. Missing collision is a distinct
 conversion failure unless the user explicitly requests visual-only output;
 visual success must never imply a collidable scene.
+COL also participates in resource info/dump/edit/build workflows, with checked
+PC COL writers and round-trip preservation, matching the other source assets.
 
 IPL-to-YMAP conversion also produces the necessary YTYP definitions, dependency
 manifest, model/texture assets when requested, and a mapping report. Check

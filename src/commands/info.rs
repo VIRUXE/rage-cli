@@ -5,9 +5,10 @@ use crate::rpf::{Archive, GtaKeys};
 pub fn run(archive_path: &Path, keys: Option<&GtaKeys>) -> Result<()> {
     let archive = Archive::open(archive_path, keys)?;
 
-    println!("RPF Archive Information");
+    println!("Archive Information");
     println!("======================");
     println!("Path:        {}", archive_path.display());
+    println!("Format:      {:?}", archive.version());
     println!("Entries:     {} ({} dirs, {} files)", archive.entry_count, archive.dir_count, archive.entry_count - archive.dir_count);
     println!("Encryption:  {}", match archive.encryption.as_u32() {
         0x4E45504F => "OPEN (no encryption)",

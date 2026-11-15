@@ -35,12 +35,28 @@ pub fn load_resource(archive: &Archive, name: &str, keys: Option<&GtaKeys>) -> R
 /// Raw bytes of a resource: read straight from disk, or, when `archive` is
 /// given, looked up inside that archive by name.
 pub fn load_resource_bytes(file: &str, archive: Option<&Path>, keys: Option<&GtaKeys>) -> Result<Vec<u8>> {
+    if ["dff", "txd", "ipl"].iter().any(|ext| extension_of(file).eq_ignore_ascii_case(ext)) {
+        return load_entry_bytes(file, archive, keys);
+    }
     match archive {
         None => fs::read(file).with_context(|| format!("failed to read '{}'", file)),
         Some(archive_path) => {
             let archive = Archive::open(archive_path, keys)?;
             archive.require_keys(keys)?;
             load_resource(&archive, file, keys)
+        }
+    }
+}
+
+/// Read any archive entry, including ordinary binary IMG assets.
+pub fn load_entry_bytes(file: &str, archive: Option<&Path>, keys: Option<&GtaKeys>) -> Result<Vec<u8>> {
+    match archive {
+        None => fs::read(file).with_context(|| format!("failed to read '{file}'")),
+        Some(path) => {
+            let archive = Archive::open(path, keys)?;
+            archive.require_keys(keys)?;
+            let entry = archive.find_file(file).with_context(|| format!("'{file}' not found in {}", path.display()))?;
+            archive.extract(entry, keys).with_context(|| format!("extracting '{file}'"))
         }
     }
 }

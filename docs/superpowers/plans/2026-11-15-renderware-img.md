@@ -203,6 +203,8 @@ The resolver loads gta.dat/IDEs/archives/TXD parent chains deterministically.
 `../rage-formats/tests/col.rs`; extend `src/legacy_game.rs`.
 
 **Interfaces:** `ColFile::parse(data: &[u8]) -> Result<ColFile>`;
+`ColFile::build() -> Result<Vec<u8>>`, plus editable document info/dump/build
+integration, preserving unknown records during no-op round trips;
 `ColModel::to_ybn(options: &ConversionOptions) -> Result<Converted>`.
 Parse required PC COL/COLL/COL2/COL3 layouts independently, retain source
 metadata and associate models through IDE identity/name.
@@ -211,7 +213,7 @@ metadata and associate models through IDE identity/name.
   concatenated models and bad offsets; compare resulting YBN geometry/materials
   and require a separate error for missing collision in scene conversion.
 - [ ] Run collision tests; expected unsupported/missing codec.
-- [ ] Implement bounded readers and typed YBN conversion; explicit mapping losses
+- [ ] Implement bounded readers/writers, editable COL dumps and typed YBN conversion; explicit mapping losses
   use the shared policy, never silently invent physics metadata.
 - [ ] Run full suite and parse real COLs. Reopen converted YBNs independently.
 - [ ] Commit `feat: resolve and convert classic GTA collision`.
