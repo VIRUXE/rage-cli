@@ -35,7 +35,7 @@ pub fn load_resource(archive: &Archive, name: &str, keys: Option<&GtaKeys>) -> R
 /// Raw bytes of a resource: read straight from disk, or, when `archive` is
 /// given, looked up inside that archive by name.
 pub fn load_resource_bytes(file: &str, archive: Option<&Path>, keys: Option<&GtaKeys>) -> Result<Vec<u8>> {
-    if ["dff", "txd", "ipl"].iter().any(|ext| extension_of(file).eq_ignore_ascii_case(ext)) {
+    if ["dff", "txd", "ipl", "col"].iter().any(|ext| extension_of(file).eq_ignore_ascii_case(ext)) {
         return load_entry_bytes(file, archive, keys);
     }
     match archive {

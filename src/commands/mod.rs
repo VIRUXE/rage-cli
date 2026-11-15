@@ -23,3 +23,4 @@ pub mod ymap_lodlights;
 pub mod catalog;
 pub mod mcp;
 pub mod archive_rebuild;
+pub mod resource_renderware;

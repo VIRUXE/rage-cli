@@ -450,6 +450,9 @@ fn run_build(args: &BuildArgs, keys: Option<&GtaKeys>, exe: Option<&Path>) -> Re
 
     let text = std::fs::read_to_string(&args.file).with_context(|| format!("failed to read '{}'", args.file.display()))?;
     let out_ext = args.output.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+    if let Some(format) = rage_formats::renderware::Format::from_extension(args.format.as_deref().unwrap_or(&out_ext)) {
+        return super::resource_renderware::build(&text, format, &args.output);
+    }
     // Drawables and bounds are built from their own XML, not the generic Meta tree.
     let drawable_kind = match args.format.as_deref().map(str::to_lowercase).as_deref() {
         Some("ydr") => Some("ydr"),
@@ -798,6 +801,9 @@ fn local_path(file: &str, archive: Option<&Path>) -> Option<PathBuf> {
 /// The text `resource info` prints: JSON when `args.json`, else the summary.
 pub fn info_text(args: &InfoArgs, keys: Option<&GtaKeys>, verbose: bool) -> Result<String> {
     let data = load_resource_bytes(&args.file, args.archive.as_deref(), keys)?;
+    if super::resource_renderware::format(&args.file).is_some() {
+        return super::resource_renderware::info(&args.file, &data, args.json);
+    }
     let container = detect(&data).with_context(|| format!("'{}'", args.file))?;
     let contents = parse_contents(&args.file, &data, &container)?;
     let local = local_path(&args.file, args.archive.as_deref());
@@ -904,6 +910,18 @@ impl Checks {
 
 fn run_dump(args: &DumpArgs, keys: Option<&GtaKeys>) -> Result<()> {
     let data = load_resource_bytes(&args.file, args.archive.as_deref(), keys)?;
+    if super::resource_renderware::format(&args.file).is_some() {
+        let text = super::resource_renderware::dump(&args.file, &data)? + "\n";
+        match &args.output {
+            Some(path) => {
+                if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) { std::fs::create_dir_all(parent)?; }
+                std::fs::write(path, text)?;
+                eprintln!("Wrote {}", path.display());
+            }
+            None => print!("{text}"),
+        }
+        return Ok(());
+    }
     let container = detect(&data).with_context(|| format!("'{}'", args.file))?;
     if let (Container::Rsc7(_), Some(kind)) = (&container, drawable::kind_of_name(&args.file)) {
         return run_dump_drawable(kind, &data, args);
