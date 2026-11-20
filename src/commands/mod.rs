@@ -10,6 +10,7 @@ pub mod search;
 pub mod resource;
 pub mod resource_drawable;
 pub mod resource_convert;
+pub mod resource_export;
 pub mod update;
 pub mod index_cmd;
 pub mod navmesh;

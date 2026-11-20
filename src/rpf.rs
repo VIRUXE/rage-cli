@@ -53,6 +53,7 @@ pub struct Archive {
     pub dir_count   : usize,
     pub root        : DirNode,
     archive         : RpfArchive,
+    rdr2            : Option<crate::rdr2::Archive>,
     data            : Backing,
     img1_dir        : Option<Vec<u8>>,
 }
@@ -88,7 +89,7 @@ impl Archive {
                 "IMG1 requires its paired DIR file '{}': {e} (or pass --img-dir)", dir.display()))?;
             validate_sector_toc(&toc, backing.bytes().len(), false)?;
             let archive = RpfArchive::parse_img1(&toc, &name)?;
-            let mut result = Self::with_archive(backing, archive, &name)?;
+            let mut result = Self::with_archive(backing, archive, None, &name)?;
             result.img1_dir = Some(toc);
             return Ok(result);
         }
@@ -112,19 +113,30 @@ impl Archive {
         if data.bytes().starts_with(&[0x52, 0x2a, 0x4e, 0xa9]) {
             validate_img3(data.bytes())?;
         }
-        let archive = RpfArchive::parse(data.bytes(), name, keys)?;
+        let header = data.bytes();
+        let (rdr2, archive) = if header.len() >= 4
+            && u32::from_le_bytes(header[..4].try_into().unwrap()) == rpf_archive::RPF8_MAGIC
+        {
+            let (rdr2, archive) = crate::rdr2::Archive::parse(header, name)?;
+            (Some(rdr2), archive)
+        } else {
+            (None, RpfArchive::parse(header, name, keys)?)
+        };
 
-        Self::with_archive(data, archive, name)
+        Self::with_archive(data, archive, rdr2, name)
     }
 
-    fn with_archive(data: Backing, archive: RpfArchive, name: &str) -> Result<Self> {
+    fn with_archive(data: Backing, archive: RpfArchive, rdr2: Option<crate::rdr2::Archive>, name: &str) -> Result<Self> {
 
         let encryption = archive.encryption;
         let entry_count = archive.entries.len();
         let dir_count = archive.entries.iter().filter(|e| e.is_directory()).count();
-        let root = build_directory_tree(&archive.entries);
+        let mut root = build_directory_tree(&archive.entries);
+        if let Some(rdr2) = &rdr2 {
+            for file in &mut root.files { file.mem_size = rdr2.entry_size(file.entry_index); }
+        }
 
-        Ok(Self { path: PathBuf::from(name), encryption, entry_count, dir_count, root, archive, data, img1_dir: None })
+        Ok(Self { path: PathBuf::from(name), encryption, entry_count, dir_count, root, archive, rdr2, data, img1_dir: None })
     }
 
     pub fn version(&self) -> RpfVersion { self.archive.version }
@@ -229,6 +241,7 @@ impl Archive {
     /// The byte range (within this archive) of a plain stored binary entry:
     /// unencrypted and uncompressed, so its bytes are usable as they lie.
     fn stored_range(&self, file: &FileRef) -> Option<std::ops::Range<usize>> {
+        if self.rdr2.is_some() { return None; }
         let rpf_archive::RpfEntryKind::BinaryFile { file_offset, file_size, uncompressed_size, is_encrypted } =
             self.archive.entries[file.entry_index].kind
         else {
@@ -268,6 +281,9 @@ impl Archive {
     }
 
     pub fn extract(&self, file: &FileRef, keys: Option<&GtaKeys>) -> Result<Vec<u8>> {
+        if let Some(rdr2) = &self.rdr2 {
+            return rdr2.extract(self.data.bytes(), file.entry_index);
+        }
         let entry = &self.archive.entries[file.entry_index];
         self.archive.extract_entry(self.data.bytes(), entry, keys)
     }
