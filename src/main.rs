@@ -3,6 +3,7 @@ use clap::{Parser, Subcommand};
 use std::path::{Path, PathBuf};
 
 mod rpf;
+mod rdr2;
 mod catalog;
 mod commands;
 mod mcp;
@@ -45,6 +46,10 @@ struct Cli {
     /// precedence over --exe
     #[arg(long, global = true, value_name = "DIR")]
     keys: Option<PathBuf>,
+
+    /// RDR2 PC Swage/librdr3 secrets.bin containing TFIT2 keys and tables
+    #[arg(long, global = true, value_name = "FILE", env = "RAGE_RDR2_KEYS")]
+    rdr2_keys: Option<PathBuf>,
 
     /// Skip the daily background check for a newer release
     /// (also RAGE_NO_UPDATE_CHECK)
@@ -187,6 +192,12 @@ enum Commands {
         #[arg(short, long, value_name = "DIR")]
         output: PathBuf,
     },
+    /// Recover RDR2 PC TFIT2 keys/tables from an unpacked executable or process memory dump
+    ExtractRdr2Keys {
+        input: PathBuf,
+        #[arg(short, long, value_name = "FILE")]
+        output: PathBuf,
+    },
 }
 
 fn load_keys(exe: Option<&Path>, keys_dir: Option<&Path>) -> Result<Option<GtaKeys>> {
@@ -201,6 +212,7 @@ fn load_keys(exe: Option<&Path>, keys_dir: Option<&Path>) -> Result<Option<GtaKe
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    rdr2::set_keys_path(cli.rdr2_keys.clone());
 
     env_logger::Builder::from_env(
         env_logger::Env::default().default_filter_or(if cli.verbose { "debug" } else { "info" })
@@ -210,7 +222,7 @@ fn main() -> Result<()> {
     // so a real command never waits on the network and the note prints last.
     let check = update::spawn_background_check(cli.no_update_check);
 
-    let keys = if matches!(cli.command, Commands::Update(_)) {
+    let keys = if matches!(cli.command, Commands::Update(_) | Commands::ExtractRdr2Keys { .. }) {
         None
     } else {
         load_keys(cli.exe.as_deref(), cli.keys.as_deref())?
@@ -254,6 +266,7 @@ fn dispatch(command: Commands, keys: Option<&GtaKeys>, exe: Option<&Path>, verbo
             let exe = exe.context("--exe is required to extract keys")?;
             keys::extract(&keys::resolve_exe(exe)?, &output)
         }
+        Commands::ExtractRdr2Keys { input, output } => rdr2::extract_keys(&input, &output),
     }
 }
 

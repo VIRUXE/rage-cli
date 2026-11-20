@@ -145,6 +145,46 @@ Later wins. Commands that fetch something "from the game" (the game index,
 and tables are derived from it. `--exe` or `GTAV_PATH` names the executable,
 and the result is cached per game build.
 
+**RDR2 PC metadata.** RPF8 reading supports TFIT2-encrypted file tables and
+file payloads, strided CBC encryption, Deflate and Oodle decompression, and
+archive offsets beyond 4 GiB. Supply your own PC keys and cipher tables:
+`--rdr2-keys secrets.bin` (or `RAGE_RDR2_KEYS`) accepts Swage/librdr3's
+length-prefixed secret store. GTA V `--exe` / `--keys` do not decrypt RDR2.
+The repository includes public secret fingerprints, never game keys.
+
+```sh
+# Import an existing Swage/librdr3 secrets.bin, or recover it locally:
+rage extract-rdr2-keys RDR2-memory.dmp -o secrets.bin
+rage tree update_4.rpf --rdr2-keys secrets.bin
+rage resource export update_4.rpf -o exports --rdr2-keys secrets.bin
+rage resource dump 12345678.ymt --archive update_4.rpf --rdr2-keys secrets.bin -o file.xml
+```
+
+Key recovery scans an unpacked executable or a contiguous memory dump of
+the running game. Packed executables may not contain the required tables;
+in that case use a memory dump or an existing Swage secret store. Recovery
+checks both secret fingerprints and refuses to write an incomplete table set.
+
+`resource export` visits `.ymt` entries (including nested archives), or
+recursively searches a folder of loose `.ymt` files. It decodes RDR2 PC
+RSC8/PRD0 metadata through the shared Meta schema walker; PSO, RBF and XML
+metadata use their existing readers. Add `--json`, `--dry-run` or repeat
+`--names FILE` as needed. RPF8 entries use hash filenames; names the supplied
+lists do not resolve remain `hash_XXXXXXXX`. Parser warnings identify fields
+the walker cannot decode; inspect them before relying on an export.
+
+Outputs retain folder/nested archive paths beneath `-o`, with `.ymt.xml` or
+`.ymt.json` extensions. A top-level archive gets its own folder (for example
+`exports/update_4.rpf/12345678.ymt.xml`). Failed files are reported, successful
+exports are retained, and any failure gives a nonzero exit status.
+`resource convert update_4.rpf -o exports --rdr2-keys secrets.bin` also
+selects metadata export, preserving the command reported in issue #34.
+GTA V Enhanced texture conversion continues to use `resource convert`.
+
+Validation currently uses generated archives and an independent TFIT2 C++
+reference vector. Retail `update_4.rpf` export still needs validation by
+someone with an RDR2 installation; console archives are unsupported.
+
 **The game index.** Some answers need the whole game: which dictionary holds
 the textures a model references, which map places an interior, which file
 holds a vanilla prop's model, which files make up a ped or a vehicle, which
@@ -213,6 +253,7 @@ debug logging, `--no-update-check` to skip the daily release check.
 | `resource build <file.xml\|file.json> -o FILE [--format meta\|pso] [--schema FILE]... [--strict] [--no-recalc] [--ytyp PATH]...` | the inverse of `dump`: a `.ymap`/`.ytyp`/`.ymt` (RSC7 Meta) or `_manifest.ymf`/`.pso` (PSO) from the XML or JSON, using CodeWalker's structure tables, or those of the original file with `--schema` |
 | `resource build <file.xml> -o FILE.ydr\|FILE.ybn\|FILE.ynd [--textures DIR] [--strict]` | the inverse of the drawable/bound/path `dump`: a `.ydr` (version 165), `.ybn` (version 43) or `.ynd` (version 1) from CodeWalker's XML, textures read from `DIR` (default: the XML's folder); the written file is read back and must dump identically, or nothing is written; a texture that is not embedded or a bone without a name is a warning, an error with `--strict` |
 | `resource convert <file\|folder>... -o DIR [--dry-run]` | convert Enhanced (Gen9) `.ytd` files to the legacy layout FiveM loads (other types are skipped with a note for now); refuses what the legacy game cannot hold, never overwrites the input |
+| `resource export <file\|folder\|RPF>... -o DIR [--json] [--dry-run] [--names FILE]...` | batch-export `.ymt` metadata as XML/JSON; RDR2 encrypted RPF8 needs `--rdr2-keys FILE` |
 | `resource recalc <ymap\|folder>... [--ytyp PATH]... [--dry-run] [--json]` | fix `.ymap` flags, `contentFlags` and extents in place, as `build` works them out; a folder is searched for every `.ymap`, and a file is rewritten only when something changed |
 | `ytyp from-drawables <file\|dir>... -o FILE.ytyp [--txd NAME] [--lod-dist N] [--hd-dist N] [--flags N] [--merge FILE]` | a type file declaring an archetype for every `.ydr`, `.ydd` entry and `.yft`, with the bounds read from the model, as CodeWalker's "New Archetype from YDR" does; `--merge` adds to an existing `.ytyp` |
 | `ymap from-menyoo <file.xml> -o FILE.ymap [--name NAME] [--lod-dist N] [--ytyp PATH]... [--no-recalc]` | a map from a Menyoo spooner XML, as CodeWalker's "Import Menyoo XML" makes it: props become entities, vehicles car generators, peds are left out; flags and extents worked out as `resource build` does |
