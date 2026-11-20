@@ -116,6 +116,10 @@ pub struct ScreenshotArgs {
     #[arg(long, value_name = "#RRGGBB", value_parser = parse_paint)]
     pub paint: Option<[u8; 3]>,
 
+    /// Set the main license-plate text (default: RAGECLI; 1–7 ASCII letters, digits or spaces)
+    #[arg(long, value_name = "TEXT")]
+    pub plate_text: Option<String>,
+
     /// Skip the game-wide texture index: only --ytd and the same-stem guess
     /// are tried for textures the embedded dictionary doesn't have
     #[arg(long)]
@@ -749,6 +753,19 @@ fn run_model(args: &ScreenshotArgs, keys: Option<&GtaKeys>, index: Option<&GameI
     let embedded: Vec<_> = embedded_textures_of(loaded.drawables()).into_iter().cloned().collect();
     let mut textures = build_texture_set(archive.as_ref(), &args.ytd, &vehicle_name, &embedded, keys, index, Some(class), log);
 
+    let has_plate = vehicles::has_license_plate(loaded.drawables());
+    let plate_text = args.plate_text.as_deref().or_else(|| has_plate.then_some("RAGECLI"));
+    if let Some(text) = plate_text {
+        if !has_plate {
+            log.warn(format!("{stem} has no license-plate material; --plate-text was ignored"));
+        } else {
+            match vehicles::with_plate_text(&textures, text) {
+                Ok(plate) => textures.override_texture("plate01", plate),
+                Err(error) => log.warn(format!("could not update {stem}'s plate; it was left unchanged: {error}")),
+            }
+        }
+    }
+
     if let Some(livery) = args.livery {
         let swaps = vehicles::apply_livery(&mut textures, loaded.drawables(), livery);
         if swaps.is_empty() {
@@ -978,7 +995,7 @@ mod tests {
         let base = || ScreenshotArgs {
             archive: None, file: None, ped: None, component: vec![], vehicle: None, hi: false, livery: None, colour_from: None,
             output: None, ytd: vec![], views: vec![], facing: rage_render::Facing::Auto, size: (1, 1), grid: false, lod: LodLevel::High, format: ImageFormat::Png,
-            background: [0; 4], cull: false, vertex_colors: false, entry: None, paint: None, no_index: false, no_cluster_framing: false, json: false,
+            background: [0; 4], cull: false, vertex_colors: false, entry: None, paint: None, plate_text: None, no_index: false, no_cluster_framing: false, json: false,
         };
         assert_eq!(parts_needed(&base()), Parts::TEXTURES);
         assert_eq!(parts_needed(&ScreenshotArgs { hi: true, ..base() }), Parts::TEXTURES | Parts::MODELS);

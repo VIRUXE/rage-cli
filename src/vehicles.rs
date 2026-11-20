@@ -6,7 +6,8 @@
 //! carvariations colour combination's carcols indices, which is what the
 //! livery and paint helpers here do.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
+use rage_render::image::{self, Rgba, RgbaImage, imageops::{self, FilterType}};
 
 use rage_formats::{rage_joaat, Drawable, ShaderParameterValue};
 use rage_render::TextureSet;
@@ -18,6 +19,73 @@ use crate::rpf::{Archive, GtaKeys};
 pub fn base_name(stem: &str) -> String {
     let lower = stem.to_lowercase();
     lower.strip_suffix("_hi").map_or(lower.clone(), str::to_owned)
+}
+
+/// Whether any drawable in the model declares the game's license-plate material.
+pub fn has_license_plate<'a>(drawables: impl IntoIterator<Item = &'a Drawable>) -> bool {
+    drawables.into_iter().any(|drawable| {
+        drawable.shader_group.as_ref().is_some_and(|group| {
+            group.shaders.iter().any(|shader| shader.parameters.iter().any(|parameter| {
+                matches!(&parameter.value, ShaderParameterValue::Texture { name, .. } if name.eq_ignore_ascii_case("plate01"))
+            }))
+        })
+    })
+}
+
+/// Renders plate text into the game's plate texture using its own glyph atlas.
+pub fn with_plate_text(textures: &TextureSet, text: &str) -> Result<RgbaImage> {
+    const CELL_WIDTH: u32 = 16;
+    const CELL_HEIGHT: u32 = 32;
+    const MAX_LETTERS: u32 = 7;
+    const FONT_EXTENTS: [f32; 4] = [0.08, 0.355, 0.92, 0.816];
+    const FONT_COLOR: [u8; 3] = [0x0f, 0x23, 0x52];
+    const FONT_THRESHOLD: [u32; 2] = [121, 128];
+    let text = text.trim().to_ascii_uppercase();
+    if text.is_empty() || text.len() > MAX_LETTERS as usize || !text.bytes().all(|b| b.is_ascii_alphanumeric() || b == b' ') {
+        bail!("plate text must be 1–7 ASCII letters, digits or spaces");
+    }
+    let plate = textures.get("plate01").context("vehicle plate texture 'plate01' is missing")?;
+    let atlas = textures.get("vehicle_generic_plate_font").context("vehicle plate font atlas 'vehicle_generic_plate_font' is missing")?;
+    if atlas.width() < CELL_WIDTH * 16 || atlas.height() < CELL_HEIGHT * 4 {
+        bail!("vehicle plate font atlas has unexpected dimensions {}x{}", atlas.width(), atlas.height());
+    }
+    let mut output = plate.clone();
+    let left = (plate.width() as f32 * FONT_EXTENTS[0]).round() as u32;
+    let top = (plate.height() as f32 * FONT_EXTENTS[1]).round() as u32;
+    let right = (plate.width() as f32 * FONT_EXTENTS[2]).round() as u32;
+    let bottom = (plate.height() as f32 * FONT_EXTENTS[3]).round() as u32;
+    let glyph_height = bottom.saturating_sub(top);
+    let slot_width = right.saturating_sub(left) as f32 / MAX_LETTERS as f32;
+    let glyph_width = slot_width.round().max(1.0) as u32;
+    let mut glyphs = Vec::with_capacity(text.len());
+    for character in text.chars() {
+        let index = match character {
+            '0'..='9' => character as u32 - '0' as u32,
+            'A'..='Z' => 10 + character as u32 - 'A' as u32,
+            ' ' => 63,
+            _ => bail!("plate font atlas does not contain a requested character"),
+        };
+        let cell = imageops::crop_imm(atlas, (index % 16) * CELL_WIDTH, (index / 16) * CELL_HEIGHT, CELL_WIDTH, CELL_HEIGHT).to_image();
+        let mut alpha = image::GrayImage::new(CELL_WIDTH, CELL_HEIGHT);
+        for (x, y, pixel) in cell.enumerate_pixels() {
+            let luminance = (u32::from(pixel[0]) * 299 + u32::from(pixel[1]) * 587 + u32::from(pixel[2]) * 114) / 1000;
+            let linear = luminance.saturating_sub(FONT_THRESHOLD[0]).min(FONT_THRESHOLD[1] - FONT_THRESHOLD[0]) as f32 / (FONT_THRESHOLD[1] - FONT_THRESHOLD[0]) as f32;
+            let smooth = linear * linear * (3.0 - 2.0 * linear);
+            alpha.put_pixel(x, y, image::Luma([(smooth * 255.0).round() as u8]));
+        }
+        let alpha = imageops::resize(&alpha, glyph_width, glyph_height, FilterType::Lanczos3);
+        let mut glyph = RgbaImage::new(glyph_width, glyph_height);
+        for (x, y, pixel) in alpha.enumerate_pixels() {
+            glyph.put_pixel(x, y, Rgba([FONT_COLOR[0], FONT_COLOR[1], FONT_COLOR[2], pixel[0]]));
+        }
+        glyphs.push(glyph);
+    }
+    let mut x = left as f32 + (right - left) as f32 * 0.5 - slot_width * glyphs.len() as f32 * 0.5;
+    for glyph in glyphs {
+        imageops::overlay(&mut output, &glyph, x.round() as i64, top as i64);
+        x += slot_width;
+    }
+    Ok(output)
 }
 
 /// A vehicle model picked through the index.
@@ -208,6 +276,22 @@ mod tests {
         assert_eq!(base_name("police_hi"), "police");
         assert_eq!(base_name("Police"), "police");
         assert_eq!(base_name("adder"), "adder");
+    }
+
+    #[test]
+    fn plate_detection_and_text_rendering_are_safe_for_unsupported_models() {
+        let plain = drawable_referencing(&["vehicle_body"]);
+        let plated = drawable_referencing(&["plate01"]);
+        assert!(!has_license_plate([&plain]));
+        assert!(has_license_plate([&plated]));
+
+        let mut textures = TextureSet::new();
+        textures.override_texture("plate01", RgbaImage::from_pixel(256, 128, Rgba([240, 240, 240, 255])));
+        textures.override_texture("vehicle_generic_plate_font", RgbaImage::from_pixel(256, 128, Rgba([255, 255, 255, 255])));
+        let result = with_plate_text(&textures, "RAGECLI").unwrap();
+        assert_eq!((result.width(), result.height()), (256, 128));
+        assert!(result.pixels().any(|pixel| pixel[0] < 240));
+        assert!(with_plate_text(&TextureSet::new(), "RAGECLI8").is_err());
     }
 
     #[test]
