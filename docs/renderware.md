@@ -6,8 +6,8 @@ DFF rendering/GLB/YDR, IPL/IDE, COL/YBN and scene conversion are follow-up work.
 See the [remaining-work tracker](https://github.com/VIRUXE/rage-cli/issues/45)
 for release prerequisites and linked implementation issues.
 
-Development builds use the adjacent crates through the
-[local-toolchain wrapper](local-toolchain.md). Parsing and writing are our own
+Released builds use published codecs. For development against adjacent crates,
+use the [local-toolchain wrapper](local-toolchain.md). Parsing and writing are our own
 implementations; no external RenderWare parser is vendored.
 
 ## IMG archives

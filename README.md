@@ -14,7 +14,7 @@ vanilla map from above. No CodeWalker, no GPU, no game running.
 The binary is `rage`. It was called `rpf` until 0.16; see [Upgrading from
 rpf-cli](#upgrading-from-rpf-cli).
 
-Classic GTA development support includes IMG archives, editable TXD/DFF files,
+Classic GTA support includes IMG archives, editable TXD/DFF files,
 texture export and TXD-to-YTD conversion. See [Classic GTA assets](docs/renderware.md)
 for commands, limits and local build instructions.
 
