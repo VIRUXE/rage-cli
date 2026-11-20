@@ -4,6 +4,7 @@
 //! input.
 
 use anyhow::{bail, Context, Result};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use rage_formats::Edition;
@@ -13,7 +14,7 @@ const EDITION_TYPES: [&str; 5] = ["ytd", "ydr", "ydd", "yft", "ypt"];
 
 #[derive(clap::Args)]
 pub struct ConvertArgs {
-    /// Resource files, or folders searched (recursively) for .ytd/.ydr/.ydd/.yft/.ypt files
+    /// Gen9 resource files/folders, or an RDR2 .rpf/.ymt to export as XML
     #[arg(required = true, value_name = "FILE|FOLDER")]
     pub paths: Vec<PathBuf>,
 
@@ -47,6 +48,7 @@ pub enum Outcome {
 /// Errors name why the legacy game cannot hold the file.
 pub fn convert_bytes(ext: &str, data: &[u8]) -> Result<Outcome> {
     let ext = ext.to_ascii_lowercase();
+    validate_input(&ext, data)?;
     match Edition::of_file(&ext, data)? {
         Some(Edition::Legacy) => Ok(Outcome::AlreadyLegacy),
         Some(Edition::Gen9) => match ext.as_str() {
@@ -61,6 +63,39 @@ pub fn convert_bytes(ext: &str, data: &[u8]) -> Result<Outcome> {
             Ok(Outcome::Unknown(rage_formats::resource_version_from_flags(sys, gfx)))
         }
     }
+}
+
+/// Check a short prefix before reading the full file: an archive can be many
+/// gigabytes, and this command only accepts loose GTA V resources.
+fn validate_input(ext: &str, prefix: &[u8]) -> Result<()> {
+    if prefix.get(..4) == Some(&rpf_archive::RPF8_MAGIC.to_le_bytes()) {
+        bail!("RDR2 RPF8 archive: use `rage resource convert <archive.rpf> -o <folder>` to batch-export .ymt metadata as XML");
+    }
+    if ext.eq_ignore_ascii_case("rpf") || prefix.get(..4) == Some(&rpf_archive::RPF7_MAGIC.to_le_bytes()) {
+        bail!("RPF archive: `resource convert` accepts loose GTA V resources; extract the files first. \
+               To export supported GTA V metadata as XML, use `rage resource dump <file.ymt> -o <file.xml>`");
+    }
+    if !EDITION_TYPES.iter().any(|e| ext.eq_ignore_ascii_case(e)) {
+        bail!("`resource convert` accepts .ytd/.ydr/.ydd/.yft/.ypt files for GTA V Enhanced-to-legacy conversion. \
+               To export supported GTA V metadata as XML, use `rage resource dump <file.ymt> -o <file.xml>`; \
+               for RDR2 .ymt use `rage resource dump <file.ymt> -o <file.xml>`");
+    }
+    Ok(())
+}
+
+fn read_input(path: &Path, ext: &str) -> Result<Vec<u8>> {
+    let mut file = std::fs::File::open(path)?;
+    let mut prefix = [0u8; 16];
+    let mut len = 0;
+    while len < prefix.len() {
+        let n = file.read(&mut prefix[len..])?;
+        if n == 0 { break; }
+        len += n;
+    }
+    validate_input(ext, &prefix[..len])?;
+    let mut data = prefix[..len].to_vec();
+    file.read_to_end(&mut data)?;
+    Ok(data)
 }
 
 fn is_edition_type(path: &Path) -> bool {
@@ -88,17 +123,28 @@ fn gather(paths: &[PathBuf]) -> Result<Vec<(PathBuf, PathBuf)>> {
     Ok(out)
 }
 
-pub fn run(args: &ConvertArgs) -> Result<()> {
+pub fn run(args: &ConvertArgs, keys: Option<&crate::rpf::GtaKeys>) -> Result<()> {
     if !args.to.eq_ignore_ascii_case("legacy") {
         bail!("--to {}: only `legacy` is supported (Enhanced -> the PC game FiveM runs)", args.to);
     }
+    if args.paths.iter().any(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("rpf") || e.eq_ignore_ascii_case("ymt"))) {
+        return super::resource_export::run(&super::resource_export::ExportArgs {
+            paths: args.paths.clone(), output: args.output.clone(), dry_run: args.dry_run,
+            json: false, names: Vec::new(),
+        }, keys);
+    }
     let files = gather(&args.paths)?;
-    if files.is_empty() { bail!("no .ytd/.ydr/.ydd/.yft/.ypt files found"); }
+    if files.is_empty() {
+        return super::resource_export::run(&super::resource_export::ExportArgs {
+            paths: args.paths.clone(), output: args.output.clone(), dry_run: args.dry_run,
+            json: false, names: Vec::new(),
+        }, keys);
+    }
 
     let (mut converted, mut skipped, mut failed) = (0usize, 0usize, 0usize);
     for (path, rel) in &files {
         let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-        let result = std::fs::read(path)
+        let result = read_input(path, ext)
             .with_context(|| format!("reading {}", path.display()))
             .and_then(|data| convert_bytes(ext, &data));
         match result {

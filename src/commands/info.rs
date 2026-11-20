@@ -9,12 +9,12 @@ pub fn run(archive_path: &Path, keys: Option<&GtaKeys>) -> Result<()> {
     println!("======================");
     println!("Path:        {}", archive_path.display());
     println!("Entries:     {} ({} dirs, {} files)", archive.entry_count, archive.dir_count, archive.entry_count - archive.dir_count);
-    println!("Encryption:  {}", match archive.encryption.as_u32() {
-        0x4E45504F => "OPEN (no encryption)",
-        0x00000000 => "NONE",
-        0x0FFFFFF9 => "AES",
-        0x0FEFFFFF => "NG",
-        v          => return Err(anyhow::anyhow!("Unknown encryption type 0x{:08X}", v)),
+    println!("Encryption:  {}", match archive.encryption {
+        crate::rpf::RpfEncryption::Open => "OPEN (no encryption)",
+        crate::rpf::RpfEncryption::None => "NONE",
+        crate::rpf::RpfEncryption::Aes => "AES",
+        crate::rpf::RpfEncryption::Ng => "NG",
+        crate::rpf::RpfEncryption::Tfit => "TFIT2 (RDR2)",
     });
 
     let files = archive.list_files();

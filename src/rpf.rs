@@ -48,6 +48,7 @@ pub struct Archive {
     pub dir_count   : usize,
     pub root        : DirNode,
     archive         : RpfArchive,
+    rdr2            : Option<crate::rdr2::Archive>,
     data            : Backing,
 }
 
@@ -77,14 +78,25 @@ impl Archive {
     }
 
     fn from_backing(data: Backing, name: &str, keys: Option<&GtaKeys>) -> Result<Self> {
-        let archive = RpfArchive::parse(data.bytes(), name, keys)?;
+        let header = data.bytes();
+        let (rdr2, archive) = if header.len() >= 4
+            && u32::from_le_bytes(header[..4].try_into().unwrap()) == rpf_archive::RPF8_MAGIC
+        {
+            let (rdr2, archive) = crate::rdr2::Archive::parse(header, name)?;
+            (Some(rdr2), archive)
+        } else {
+            (None, RpfArchive::parse(header, name, keys)?)
+        };
 
         let encryption = archive.encryption;
         let entry_count = archive.entries.len();
         let dir_count = archive.entries.iter().filter(|e| e.is_directory()).count();
-        let root = build_directory_tree(&archive.entries);
+        let mut root = build_directory_tree(&archive.entries);
+        if let Some(rdr2) = &rdr2 {
+            for file in &mut root.files { file.mem_size = rdr2.entry_size(file.entry_index); }
+        }
 
-        Ok(Self { path: PathBuf::from(name), encryption, entry_count, dir_count, root, archive, data })
+        Ok(Self { path: PathBuf::from(name), encryption, entry_count, dir_count, root, archive, rdr2, data })
     }
 
     /// Opens a nested `.rpf` entry as an archive. Nested archives are stored
@@ -102,6 +114,7 @@ impl Archive {
     /// The byte range (within this archive) of a plain stored binary entry:
     /// unencrypted and uncompressed, so its bytes are usable as they lie.
     fn stored_range(&self, file: &FileRef) -> Option<std::ops::Range<usize>> {
+        if self.rdr2.is_some() { return None; }
         let rpf_archive::RpfEntryKind::BinaryFile { file_offset, file_size, uncompressed_size, is_encrypted } =
             self.archive.entries[file.entry_index].kind
         else {
@@ -141,6 +154,9 @@ impl Archive {
     }
 
     pub fn extract(&self, file: &FileRef, keys: Option<&GtaKeys>) -> Result<Vec<u8>> {
+        if let Some(rdr2) = &self.rdr2 {
+            return rdr2.extract(self.data.bytes(), file.entry_index);
+        }
         let entry = &self.archive.entries[file.entry_index];
         self.archive.extract_entry(self.data.bytes(), entry, keys)
     }
